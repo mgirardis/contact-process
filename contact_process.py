@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-import copy
-import collections
-import itertools
-import argparse
-import random
-import numpy
+import os
+import sys
 import time
+import copy
+import numpy
+import random
+import argparse
 import scipy.io
 import datetime
-import sys
-import os
+import itertools
+import collections
 
 def main():
 
     # for debug
     #sys.argv = 'python contact_process.py -l 3.4 -N 10000 -tTotal 1000 -graph ring -X0 1 -outputFile cp_ring.mat'.split(' ')[1:]
-    parser = argparse.ArgumentParser(description='Contact process in 1+1 dimensions or mean-field all-to-all graph\n\n(l_c=3.297848 for ring; l_c=1 for mean-field)')
+    parser = argparse.ArgumentParser(description='Contact process in 1+1 dimensions or mean-field all-to-all graph\n\n(l_c=3.297848 for ring; l_c=1 for mean-field)',formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('-l',           nargs=1, required=False, metavar='l_PARAM',      type=float, default=[1.1],   help='CP rate (l_c=3.297848 for ring; l_c=1 for mean-field)')
     parser.add_argument('-N',           nargs=1, required=False, metavar='N_PARAM',      type=int,   default=[10000], help='number of sites in the network')
     parser.add_argument('-M',           nargs=1, required=False, metavar='M_PARAM',      type=int,   default=[100],   help='number of memory time steps for quasistationary simulation (whenever the system goes into absorbing, it is placed in a random state chosen from the last M visited states)')
