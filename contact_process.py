@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
+import os
 import sys
 import time
 import numpy
 import random
 import argparse
-import scipy.io
 import datetime
 import itertools
 import collections
@@ -26,6 +26,9 @@ def main():
     args.outputFile  = get_new_file_name(get_output_filename(args.outputFile))
     args.spkFileName = args.outputFile.replace('.mat','_spk.txt') if args.writeOnRun else ''
 
+    output_dir       = os.path.dirname(args.outputFile)
+    os.makedirs(output_dir, exist_ok=True)
+
     print('* Simulation parameters:')
     print(args)
 
@@ -38,6 +41,9 @@ def main():
 
     print('* Writing ... %s'%args.outputFile)
     save_simulation_file(sys.argv, args, rho, X_values, X_ind, X_time)
+    del rho, X_values, X_ind, X_time # releasing memory to avoid memory error when merging files
+    if args.saveSites and args.writeOnRun and args.mergespkfile:
+        merge_simulation_files(args.outputFile, args.spkFileName, remove_spk_file=False, verbose=True)
 
     print('done')
     print(' ')
@@ -160,9 +166,9 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
                     break
                 get_random_state(X, random.choice(rho_memory))
                 rho_temp = sum(X)
-        rho_temp = rho_temp / N_fl
-        rho_prev = rho_temp
-        rho_memory[t+1] = rho_temp
+        rho_temp        = rho_temp / N_fl
+        rho_prev        = rho_temp
+        rho_memory[t+1] = rho_temp # keeping a memory of the fraction of active sites in the previous M steps (since it is mean-field, it doesn't matter which sites are active)
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
@@ -278,10 +284,10 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
     neigh = get_ring_neighbors(graph,N)
     #n_neigh = float(len(neigh[0])) # number of neighbors of each site
     #p = l / (1.0+l) if activation == 'prob' else l  # probability is the transition rate divided by total rate (1+lambda), the division by n_neigh is carried out in state_iter
-    is_aval_sim = sim == 'aval'
-    alpha = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
-    N_fl = float(N)
-    rho_memory = CyclicStack(M)
+    is_aval_sim   = sim == 'aval'
+    alpha         = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+    N_fl          = float(N)
+    rho_memory    = CyclicStack(M)
     rho_memory[0] = fX0
     for t in range(tTrans):
         sum_of_X = 0.0
@@ -291,8 +297,8 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
         if sum_of_X < 1.0:
             if is_aval_sim:
                 sum_of_X = 2.0
-                k = int((N-1)/2)
-                X[k] = 1.0
+                k        = int((N-1)/2)
+                X[k]     = 1.0
                 #X[k-1] = 1.0
                 #X[k+1] = 1.0
             else:
@@ -322,8 +328,9 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
         if is_aval_sim:
             rho[t] = rho_temp / N_fl
             if rho_temp < 1.0:
-                k = int((N-1)/2)
-                X[k] = 1.0
+                k        = int((N-1)/2) # middle of the network
+                X[k]     = 1.0
+                rho_temp = 1.0
                 #X[k-1] = 1.0 # two seeds force X[k] == 1.0 in the next time step
                 #X[k+1] = 1.0
         else:
@@ -332,7 +339,7 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
                     break
                 get_random_state(X, random.choice(rho_memory))
                 rho_temp = sum(X)
-            rho[t] = rho_temp / N_fl
+            rho[t]        = rho_temp / N_fl
             rho_memory[t] = rho[t]
     close_file(spk_file,saveSites and writeOnRun)
     return rho, X_values, X_ind, X_time

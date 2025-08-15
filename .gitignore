@@ -1,5 +1,10 @@
 *.mat
 *.txt
 check_correlation_func.ipynb
-test_sim_results/
+test_sim_*/
 modules/__pycache__/
+run*.sh
+lines*.sh
+debug*.ipynb
+debug*.py
+test_sim/

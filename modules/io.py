@@ -16,15 +16,16 @@ def add_simulation_parameters(parser):
     parser.add_argument('-tTotal',      nargs=1, required=False, metavar='tTotal_PARAM', type=int,   default=[10000], help='total number of time steps')
     parser.add_argument('-tTrans',      nargs=1, required=False, metavar='tTrans_PARAM', type=int,   default=[0],     help='number of transient time steps')
     parser.add_argument('-graph',       nargs=1, required=False, metavar='GRAPH_TYPE',   type=str,   default=['ring'],        choices=['alltoall', 'ring', 'ringfree'], help='alltoall -> mean-field simulation; ring -> 1+1 simulation with periodic boundary conditions; ringfree -> ring with free boundaries')
-    parser.add_argument('-update',      nargs=1, required=False, metavar='UPDATE_TYPE',  type=str,   default=['seq'],         choices=['seq','sequential','par','parallel'], help='seq -> standard update scheme: 1 particle update/ts (paragraph after eq 3.35 in Henkel book); par -> parallel update (attempts to update all articles at each ts, matches the E/I network)')
-    parser.add_argument('-sim',         nargs=1, required=False, metavar='SIM_TYPE',     type=str,   default=['timeevo'],     choices=['timeevo', 'aval'], help='timeevo -> simple time evolution stimulation (quasistatic if M > 0); aval -> avalanche simulation; seeds 1 site every time activity dies out')
+    parser.add_argument('-update',      nargs=1, required=False, metavar='UPDATE_TYPE',  type=str,   default=['seq'],         choices=['seq','sequential','par','parallel'], help='seq -> standard update scheme: 1 particle update/ts (paragraph after eq 3.35 in Henkel book); par -> parallel update (attempts to update all sites at each ts, matches the E/I network)')
+    parser.add_argument('-sim',         nargs=1, required=False, metavar='SIM_TYPE',     type=str,   default=['timeevo'],     choices=['timeevo', 'aval'], help='timeevo -> simple time evolution simulation (quasistatic if M > 0); aval -> avalanche simulation; seeds 1 site every time activity dies out')
     #parser.add_argument('-activation',  nargs=1, required=False, metavar='ACTIV_TYPE',   type=str,   default=['rate'],        choices=['rate', 'prob'], help='rate -> each site is activated if random < l*r (r=frac of act neigh); prob -> each site is activated if random < p*r (p=l/(1+l) and r=frac of act neigh -- seems to yield a wrong l_c, but seems to be the correct one according to books)')
     #parser.add_argument('-algorithm',   nargs=1, required=False, metavar='ALGO_TYPE',    type=str,   default=['tomeoliveira'],choices=['mine', 'tomeoliveira'], help='mine -> my alogirhtm -- seems to be wrong; tomeoliveira -> algorithm describe in pg 308pdf/402 of the Tome & Oliveira book, before eq (13.6)')
-    parser.add_argument('-noX0Rand',    required=False, action='store_true', default=False, help='if set, Xi is generated sequentially')
-    parser.add_argument('-saveSites',   required=False, action='store_true', default=False, help='if set, saves the Xi variable for every site (may consume a lot of memory!)')
-    parser.add_argument('-writeOnRun',  required=False, action='store_true', default=False, help='if set, writes the Xi variables to an output *_spk.txt file during the main time loop (needs -saveSites to be set, and avoids memory errors at the expense of a slower simulation)')
-    parser.add_argument('-expandtime',  required=False, action='store_true', default=False, help='if set, then uses the dt=1/N to expand the total simulation time: tTotal_eff = tTotal / dt (only for sequential update)')
-    parser.add_argument('-outputFile',  nargs=1, required=False, metavar='OUTPUT_FILE_NAME', type=str, default=['cp.mat'], help='name of the output file')
+    parser.add_argument('-noX0Rand',     required=False, action='store_true', default=False, help='if set, Xi is generated sequentially')
+    parser.add_argument('-saveSites',    required=False, action='store_true', default=False, help='if set, saves the Xi variable for every site (may consume a lot of memory!)')
+    parser.add_argument('-writeOnRun',   required=False, action='store_true', default=False, help='if set, writes the Xi variables to an output *_spk.txt file during the main time loop (needs -saveSites to be set, and avoids memory errors at the expense of a slower simulation)')
+    parser.add_argument('-mergespkfile', required=False, action='store_true', default=False, help='if set, tries to merge the output *.mat with the output *_spk.txt file (if it exists) into a single *.mat file, and removes the *_spk.txt file. It requires both -saveSites and -writeOnRun to be set. WARNING: for some unknown reason, sometimes the merging is not successful.')
+    parser.add_argument('-expandtime',   required=False, action='store_true', default=False, help='if set, then uses the dt=1/N to expand the total simulation time: tTotal_eff = tTotal / dt (only for sequential update)')
+    parser.add_argument('-outputFile',   nargs=1, required=False, metavar='OUTPUT_FILE_NAME', type=str, default=['cp.mat'], help='name of the output file')
     return parser
 
 def get_help_string(parser):
@@ -69,27 +70,27 @@ def _get_spk_file_name(fname_main_output, spkFileName=''):
         fname_spk_output = os.path.join(os.path.split(fname_main_output)[0],os.path.split(spkFileName)[-1])
     return fname_spk_output
 
+def _get_merged_file_name(fname_main_output):
+    fname, _ = os.path.splitext(fname_main_output)
+    return fname + '_merged.mat'
+
 def merge_simulation_files(fname_main_output, fname_spk_output='', remove_spk_file=True, verbose=True):
     d = import_mat_file(fname_main_output)
     if len(fname_spk_output) == 0:
         fname_spk_output    = _get_spk_file_name(fname_main_output, d.spkFileName)
     if verbose:
-        print(f'Merging files: {fname_main_output} and {fname_spk_output}')
+        print(f'* Merging files: {fname_main_output} and {fname_spk_output}')
     X_values, X_ind, X_time = import_spk_file_no_error(fname_spk_output,remove_spk_file=remove_spk_file,verbose=verbose)
     d.X_values              = X_values
     d.X_ind                 = X_ind
     d.X_time                = X_time
     d.writeOnRun            = False
     d.spkFileName           = ''
-    scipy.io.savemat(fname_main_output,dict(**d),long_field_names=True,do_compression=True)
+    scipy.io.savemat(_get_merged_file_name(fname_main_output),dict(**d),long_field_names=True,do_compression=True)
     if verbose:
         print(f'  ... merged file saved as {fname_main_output}')
 
-def save_simulation_file(argv, args, rho, X_values, X_ind, X_time, remove_spk_file=True,verbose=True):
-    if args.saveSites and args.writeOnRun:
-        X_values, X_ind, X_time = import_spk_file_no_error(args.spkFileName,remove_spk_file=remove_spk_file,verbose=verbose)
-    if len(X_time)>0:
-        X_time = numpy.asarray(X_time) * args.dt
+def save_simulation_file(argv, args, rho, X_values, X_ind, X_time):
     scipy.io.savemat(args.outputFile,dict(cmd_line=' '.join(argv),time=numpy.arange(len(rho))*args.dt,rho=rho, X_values=X_values, X_ind=X_ind, X_time=X_time,**args),long_field_names=True,do_compression=True)
 
 def get_output_filename(path):
