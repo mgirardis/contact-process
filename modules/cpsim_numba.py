@@ -38,7 +38,7 @@ def Get_Simulation_Func(args):
         if not is_parallel_update(args.update):
             args.update = 'par' # forcing parallel update for avalanche
             print('forcing parallel update because sim == %s'%args.sim)
-    if args.graph == 'alltoall':
+    if args.graph == GraphType.ALLTOALL:
         if is_parallel_update(args.update):
             return Run_MF_parallel
         else:
