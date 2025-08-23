@@ -50,7 +50,6 @@ def main():
         if args.writeOnRun and args.saveSites:
             print('  ... writing file ',args.spkFileName,' during simulation')
         with contextlib.redirect_stdout(spk_file):
-
             rho, X_data     = simulation_func(**io.keep_keys(dict(**args),io.get_func_param(simulation_func)))
     sim_time_end    = time.monotonic()
     print("* End of simulation... Total time: {}".format(datetime.timedelta(seconds=sim_time_end - sim_time_start)))
