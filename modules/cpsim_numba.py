@@ -325,7 +325,7 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
     rho_prev    = float(sum(X)) / N_fl
     # rho_memory OLD -> rho_memory[0] ### this is the stack
     rho_memory,cs_count = CyclicStack_Init(M)
-    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,rho_memory,0,fX0)
+    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans):
         sum_X = 0
         for i in range(N):

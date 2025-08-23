@@ -20,6 +20,7 @@ def main():
     #sys.argv  = 'python contact_process.py -l 3.0 -N 1000 -tTotal 10000 -graph ring -X0 1 -outputFile cp_ring_l3.0_aval_N1000_t10000.mat -saveSites -writeOnRun'.split()[1:]
     #sys.argv  = 'python contact_process.py -l 3.000000 -N 2560 -tTrans 50000 -tTotal 80000 -graph ring -X0 1 -fX0 0 -sim aval -outputFile test_sim/N2560/corr_ring/cp_ring_l3.0_par_aval_N2560_t80000_fX00.mat      -saveSites -writeOnRun -update parallel -mergespkfile'.split()[1:]
     #sys.argv = 'python contact_process.py -l 3.000000 -N 1000 -tTrans 1000 -tTotal 1100 -graph ring -X0 1 -fX0 0 -sim aval -outputFile debug/cp_ring_l3.0_par_aval_N10000_t50000_fX00.mat      -saveSites -writeOnRun -update parallel -mergespkfile'.split()[1:]
+    #sys.argv = 'python contact_process.py -l 0.7 -N 2560 -tTrans 50000 -tTotal 80000 -graph alltoall -X0 1 -fX0 0 -sim aval -outputFile test_sim/N2560/corr_mf/cp_mf_l0.7_par_aval_N2560_t80000_fX00.mat -saveSites -writeOnRun -update parallel -mergespkfile'.split()[1:]
     parser = argparse.ArgumentParser(description='Contact process in 1+1 dimensions or mean-field all-to-all graph\n\n(l_c=3.297848 for ring; l_c=1 for mean-field)',formatter_class=argparse.RawTextHelpFormatter)
     parser = io.add_simulation_parameters(parser)
 
