@@ -18,10 +18,11 @@ class FilterType(IntEnum):
     LOWPASS    = 2
     MOVING_AVG = 3
 
-class PositionMFType(IntEnum):
+class PositionType(IntEnum):
     RING      = 0
-    LATTICE2D = 1
-    RANDOM2D  = 2
+    LINE      = 1
+    LATTICE2D = 2
+    RANDOM2D  = 3
 
 @njit
 def _largest_factors(N):
@@ -73,25 +74,32 @@ def calc_random_positions(N):
     return r
 
 @njit
-def calc_correlation_function_MF(C,avg_same_distance=True, position:PositionMFType = 0):
-    if position == PositionMFType.RING:
-        r = calc_1d_positions_periodicBC(C.shape[0])
-    elif position == PositionMFType.LATTICE2D:
-        r = calc_2d_positions(C.shape[0])
-    elif position == PositionMFType.RANDOM2D:
-        r = calc_random_positions(C.shape[0])
+def calc_position(N, position:PositionType):
+    if position == PositionType.RING:
+        r = calc_1d_positions_periodicBC(N)
+    elif position == PositionType.LINE:
+        r = calc_1d_positions_freeBC(N)
+    elif position == PositionType.LATTICE2D:
+        r = calc_2d_positions(N)
+    elif position == PositionType.RANDOM2D:
+        r = calc_random_positions(N)
     else:
         raise ValueError('unknown position type')
+    return r
+
+@njit
+def calc_correlation_function_MF(C,avg_same_distance=True, position:PositionType = 0):
+    r = calc_position(C.shape[0], position)
     return calc_correlation_function_numba(C,r,avg_same_distance)
 
 @njit
-def calc_correlation_function_1d_periodicBC(C,avg_same_distance=True):
-    r = calc_1d_positions_periodicBC(C.shape[0])
+def calc_correlation_function_1d_periodicBC(C,avg_same_distance=True,position:PositionType = 1):
+    r = calc_position(C.shape[0], position)
     return calc_correlation_function_numba(C,r,avg_same_distance)
 
 @njit
-def calc_correlation_function_1d_freeBC(C,avg_same_distance=True):
-    r = calc_1d_positions_freeBC(C.shape[0])
+def calc_correlation_function_1d_freeBC(C,avg_same_distance=True,position:PositionType = 1):
+    r = calc_position(C.shape[0], position)
     return calc_correlation_function_numba(C,r,avg_same_distance)
 
 @njit
@@ -115,8 +123,8 @@ def calc_average_same_distance(s, Cf):
     s_rounded = numpy.round(s, decimals=8)  # You can adjust decimals as needed
 
     # Sort s and Cf together by s_rounded
-    idx = numpy.argsort(s_rounded)
-    s_sorted = s_rounded[idx]
+    idx       = numpy.argsort(s_rounded)
+    s_sorted  = s_rounded[idx]
     Cf_sorted = Cf[idx]
 
     # Initialize output lists

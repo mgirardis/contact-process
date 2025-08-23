@@ -15,7 +15,7 @@ def add_simulation_parameters(parser):
     parser.add_argument('-fX0',         nargs=1, required=False, metavar='fX0_PARAM',    type=float, default=[0.5],   help='fraction of sites assigned to X0 as IC (remaining are zero)')
     parser.add_argument('-tTotal',      nargs=1, required=False, metavar='tTotal_PARAM', type=int,   default=[10000], help='total number of time steps')
     parser.add_argument('-tTrans',      nargs=1, required=False, metavar='tTrans_PARAM', type=int,   default=[0],     help='number of transient time steps')
-    parser.add_argument('-graph',       nargs=1, required=False, metavar='GRAPH_TYPE',   type=str,   default=['ring'],        choices=['alltoall', 'ring', 'ringfree'], help='alltoall -> mean-field simulation; ring -> 1+1 simulation with periodic boundary conditions; ringfree -> ring with free boundaries')
+    parser.add_argument('-graph',       nargs=1, required=False, metavar='GRAPH_TYPE',   type=str,   default=['ring'],        choices=['mf', 'alltoall', 'ring', 'ringfree'], help='mf,alltoall -> mean-field simulation; ring -> 1+1 simulation with periodic boundary conditions; ringfree -> ring with free boundaries')
     parser.add_argument('-update',      nargs=1, required=False, metavar='UPDATE_TYPE',  type=str,   default=['seq'],         choices=['seq','sequential','par','parallel'], help='seq -> standard update scheme: 1 particle update/ts (paragraph after eq 3.35 in Henkel book); par -> parallel update (attempts to update all sites at each ts, matches the E/I network)')
     parser.add_argument('-sim',         nargs=1, required=False, metavar='SIM_TYPE',     type=str,   default=['timeevo'],     choices=['timeevo', 'aval'], help='timeevo -> simple time evolution simulation (quasistatic if M > 0); aval -> avalanche simulation; seeds 1 site every time activity dies out')
     #parser.add_argument('-activation',  nargs=1, required=False, metavar='ACTIV_TYPE',   type=str,   default=['rate'],        choices=['rate', 'prob'], help='rate -> each site is activated if random < l*r (r=frac of act neigh); prob -> each site is activated if random < p*r (p=l/(1+l) and r=frac of act neigh -- seems to yield a wrong l_c, but seems to be the correct one according to books)')
@@ -43,9 +43,10 @@ def import_spk_file(fname):
     X_values, X_ind, X_time = [], [], []
     with open(fname,'r') as f:
         for line in f:
-            if line.startswith('#'):
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
-            t, k, X = line.strip().split(',')
+            t, k, X = line.split(',')
             X_values.append(float(X))
             X_ind.append(int(k))
             X_time.append(float(t))
@@ -78,6 +79,11 @@ def merge_simulation_files(fname_main_output, fname_spk_output='', remove_spk_fi
     d = import_mat_file(fname_main_output)
     if len(fname_spk_output) == 0:
         fname_spk_output    = _get_spk_file_name(fname_main_output, d.spkFileName)
+    if not os.path.isfile(fname_spk_output):
+        print(f':::: WARNING :::: spk file {fname_spk_output} not found, cannot merge files ...')
+        print('                   This program uses numba and cannot write txt files,')
+        print('                   so the output was possibly written to the stdout instead.')
+        return
     if verbose:
         print(f'* Merging files: {fname_main_output} and {fname_spk_output}')
     X_values, X_ind, X_time = import_spk_file_no_error(fname_spk_output,remove_spk_file=remove_spk_file,verbose=verbose)
@@ -86,12 +92,20 @@ def merge_simulation_files(fname_main_output, fname_spk_output='', remove_spk_fi
     d.X_time                = X_time
     d.writeOnRun            = False
     d.spkFileName           = ''
-    scipy.io.savemat(_get_merged_file_name(fname_main_output),dict(**d),long_field_names=True,do_compression=True)
+    fname_merged            = _get_merged_file_name(fname_main_output)
+    scipy.io.savemat(fname_merged,dict(**d),long_field_names=True,do_compression=True)
     if verbose:
-        print(f'  ... merged file saved as {fname_main_output}')
+        print(f'  ... merged file saved as {fname_merged}')
 
-def save_simulation_file(argv, args, rho, X_values, X_ind, X_time):
-    scipy.io.savemat(args.outputFile,dict(cmd_line=' '.join(argv),time=numpy.arange(len(rho))*args.dt,rho=rho, X_values=X_values, X_ind=X_ind, X_time=X_time,**args),long_field_names=True,do_compression=True)
+def save_simulation_file(argv, args, rho, X_data):
+    # X_data[i,:] = [t,k,X]
+    if not (type(X_data) is numpy.ndarray):
+        X_data = numpy.array(X_data, dtype=float)
+        if X_data.shape == (0,):
+            X_data = X_data.reshape((0,3))
+    args.graph = args.graph.name.lower() if hasattr(args.graph,'name') else str(args.graph).lower()
+    scipy.io.savemat(args.outputFile,dict(cmd_line=' '.join(argv),time=numpy.arange(len(rho))*args.dt,rho=rho, X_values=X_data[:,2], X_ind=X_data[:,1], X_time=X_data[:,0],**args),long_field_names=True,do_compression=True)
+    print(f'  ... simulation file saved ::: {args.outputFile}')
 
 def get_output_filename(path):
     fname,fext = os.path.splitext(path)
@@ -137,6 +151,63 @@ def get_new_file_name(path):
         counter += 1
     return path
 
+def structtype_to_recarray(s):
+    if isinstance(s,list) or isinstance(s,tuple):
+        s_new = structtype(struct_fields=list(s[0].keys()),field_values=[ None for _ in s[0].keys() ])
+        for k in s[0].keys():
+            s_new[k] = list_of_arr_to_arr_of_obj([ v[k] for v in s ])
+        return struct_array_for_scipy(s_new.GetFields(','),*s_new.values())
+    return struct_array_for_scipy(s.GetFields(','),*[list_of_arr_to_arr_of_obj([v]) for v in s.values()])
+
+def recarray_to_structtype(r):
+    unpack_array = lambda a: a if numpy.isscalar(a) else (a.item(0) if a.size==1 else a)
+    s = structtype(**{ field : unpack_array(r[field]) for field in r.dtype.names })
+    if len(r) > 1:
+        return convert_struct_of_arrays_to_structarray(s)
+    return s
+
+def convert_struct_of_arrays_to_structarray(s):
+    fields = s.GetFields(',').split(',')
+    N      = len(s[fields[0]])
+    if not all(len(s[f]) == N for f in fields):
+        raise ValueError('all fields in s must have the same length')
+    if N > 1:
+        s_structarray = [ structtype(**{k:None for k in s.keys()}) for _ in range(N) ]
+        for i in range(N):
+            for k in s.keys():
+                s_structarray[i][k] = s[k][i]
+        return s_structarray
+    else:
+        return s
+
+def struct_array_for_scipy(field_names,*fields_data):
+    """
+    returns a data structure which savemat in scipy.io interprets as a MATLAB struct array
+    the order of field_names must match the order in which the remaining arguments are passed to this function
+    such that
+    s(j).(field_names(i)) == fields_data[i][j], identified by field_names[i]
+
+    field_names ->  comma-separated string listing the field names;
+                        'field1,field2,...' -> field_names(1) == 'field1', etc...
+    fields_data ->  each extra argument entry is a list with the data for each field of the struct
+                        fields_data[i][j] :: data for field i in the element j of the struct array: s(j).(field_names(i))
+    
+    returns
+        numpy record array S where
+        S[field_names[i]][j] == fields_data[i][j]
+    """
+    fn_list = field_names.split(',')
+    assert len(fn_list) == len(fields_data),'you must give one field name for each field data'
+    return numpy.core.records.fromarrays([f for f in fields_data],names=fn_list,formats=[object]*len(fn_list))
+
+def list_of_arr_to_arr_of_obj(X):
+    n = len(X)
+    Y = numpy.empty((n,),dtype=object)
+    for i,x in enumerate(X):
+        Y[i] = x
+    return Y
+
+
 def namespace_to_structtype(a):
     return structtype(**fix_args_lists_as_scalars(copy.deepcopy(a.__dict__)))
 
@@ -146,7 +217,7 @@ class structtype(collections.abc.MutableMapping):
             #assert not(type(values) is type(None)),"if you provide field names, you must provide field values"
             if not self._is_iterable(struct_fields):
                 struct_fields = [struct_fields]
-                field_values = [field_values]
+                field_values  = [field_values]
             kwargs.update({f:v for f,v in zip(struct_fields,field_values)})
         self.Set(**kwargs)
     def Set(self,**kwargs):
@@ -227,46 +298,46 @@ class structtype(collections.abc.MutableMapping):
     def __iter__(self):
         return iter(self.__dict__)
 
-def get_write_spike_data_functions(saveSites,writeOnRun):
-    if saveSites:
-        if writeOnRun:
-            write_spk_time = write_spk_data #lambda t_ind,k_ind: spkTimeFile.write(str(t_ind) + ',' + str(k_ind) + '\n')
-            save_spk_time  = save_spk_data_fake
-        else:
-            write_spk_time = write_spk_data_fake
-            save_spk_time  = save_spk_data
-    else:
-        save_spk_time  = save_spk_data_fake
-        write_spk_time = write_spk_data_fake
-    return write_spk_time,save_spk_time
-
-def save_spk_data_fake(X_values, X_ind, X_time, X, k, t):
-    pass
-
-def save_spk_data(X_values, X_ind, X_time, X, k, t):
-    if X:
-        X_values.append(X)
-        X_ind.append(k)
-        X_time.append(t)
-
-def write_spk_data_fake(spkFile,t,k,X):
-    pass
-
-def write_spk_data(spkFile,t,k,X):
-    if X:
-        spkFile.write(str(t) + ',' + str(k) + ',' + str(X) + '\n')
-    #print(t,',',k)
-
-def open_file(spkFileName,saveSites_and_writeOnRun):
-    if saveSites_and_writeOnRun:
-        spk_file = open(spkFileName,'w')
-        spk_file.write('#t,k,Xk\n') # header
-        print(f'  ... temp spk file opened: {spkFileName}')
-        return spk_file
-    return None
-
-def close_file(spkFile,saveSites_and_writeOnRun):
-    if saveSites_and_writeOnRun:
-        spkFile.close()
-        print('  ... temp spk file closed')
-
+#def get_write_spike_data_functions(saveSites,writeOnRun):
+#    if saveSites:
+#        if writeOnRun:
+#            write_spk_time = write_spk_data #lambda t_ind,k_ind: spkTimeFile.write(str(t_ind) + ',' + str(k_ind) + '\n')
+#            save_spk_time  = save_spk_data_fake
+#        else:
+#            write_spk_time = write_spk_data_fake
+#            save_spk_time  = save_spk_data
+#    else:
+#        save_spk_time  = save_spk_data_fake
+#        write_spk_time = write_spk_data_fake
+#    return write_spk_time,save_spk_time
+#
+#def save_spk_data_fake(X_values, X_ind, X_time, X, k, t):
+#    pass
+#
+#def save_spk_data(X_values, X_ind, X_time, X, k, t):
+#    if X:
+#        X_values.append(X)
+#        X_ind.append(k)
+#        X_time.append(t)
+#
+#def write_spk_data_fake(spkFile,t,k,X):
+#    pass
+#
+#def write_spk_data(spkFile,t,k,X):
+#    if X:
+#        spkFile.write(str(t) + ',' + str(k) + ',' + str(X) + '\n')
+#    #print(t,',',k)
+#
+#def open_file(spkFileName,saveSites_and_writeOnRun):
+#    if saveSites_and_writeOnRun:
+#        spk_file = open(spkFileName,'w')
+#        spk_file.write('#t,k,Xk\n') # header
+#        print(f'  ... temp spk file opened: {spkFileName}')
+#        return spk_file
+#    return None
+#
+#def close_file(spkFile,saveSites_and_writeOnRun):
+#    if saveSites_and_writeOnRun:
+#        spkFile.close()
+#        print('  ... temp spk file closed')
+#
