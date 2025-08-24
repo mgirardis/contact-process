@@ -99,7 +99,8 @@ def get_random_state(X,f_act):
     N = len(X)
     get_ordered_state(X,f_act)
     for i in range(N-1):
-        j = random.randint(i, N-1)
+        #j = random.randint(i, N-1)
+        j = numpy.random.randint(i, N)
         X[i],X[j] = X[j],X[i] # Shuffle X in-place using Fisher-Yates
     #return X
 
@@ -249,7 +250,11 @@ def state_iter(X,n,inv_l):
     # returns the new state based on the previous state X for a given node
     #         site is occupied, so it eliminates               site is empty, so it creates
     #         the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
-    return bool2int( numpy.random.random() > inv_l ) if X else bool2int(numpy.random.random() < n)
+    #return bool2int( numpy.random.random() > inv_l ) if X else bool2int(numpy.random.random() < n)
+    if X: # site is occupied
+        return bool2int(numpy.random.random() > inv_l)
+    else: # site is empty
+        return bool2int(numpy.random.random() < n)
 
 @njit
 def stack_add(stack,k):
@@ -283,7 +288,8 @@ def CyclicStack_Get(stack, count, index):
 @njit(types.float64(types.float64[:],types.int64))
 def CyclicStack_GetRandom(stack, count):
     #stack, maxsize, count = cyclic_stack_data
-    return stack[random.randint(0,count-1)]
+    #return stack[random.randint(0,count-1)]
+    return stack[numpy.random.randint(0,count)]
 
 #@njit(types.int64(types.int64))
 #def CyclicStack_Len(count):
@@ -329,7 +335,7 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
     for t in range(1,tTrans):
         sum_X = 0
         for i in range(N):
-            X[i]      = state_iter(X[i],rho_prev,alpha)
+            X[i]   = state_iter(X[i],rho_prev,alpha)
             sum_X += X[i]
         # updates rho_temp and X as needed if the network activity must be restarted
         if not restart_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
@@ -359,7 +365,7 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
             break
         rho_prev      = float(sum_X) / N_fl
         rho[t]        = rho_prev
-        rho_memory[t] = rho_prev
+        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
     return rho, X_data
 
@@ -376,7 +382,8 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans_eff):
-        i      = random.randint(0,N-1) # selecting update site
+        #i      = random.randint(0,N-1) # selecting update site
+        i      = numpy.random.randint(0,N) # selecting update site
         Xa     = X[i]
         X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
@@ -399,7 +406,8 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
-        i      = random.randint(0,N-1) # selecting update site
+        #i      = random.randint(0,N-1) # selecting update site
+        i      = numpy.random.randint(0,N) # selecting update site
         Xa     = X[i]
         X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
@@ -410,7 +418,7 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,
                 break
             get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
             sum_X = sum(X)
-        rho[t]        = float(sum_X) / N_fl
+        rho[t]              = float(sum_X) / N_fl
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
     return rho, X_data
@@ -471,7 +479,8 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,saveSite
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans_eff):
-        i      = random.randint(0,N-1) # selecting update site
+        #i      = random.randint(0,N-1) # selecting update site
+        i      = numpy.random.randint(0,N) # selecting update site
         Xa     = X[i]
         X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
@@ -492,7 +501,8 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,saveSite
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
-        i      = random.randint(0,N-1) # selecting update site
+        #i      = random.randint(0,N-1) # selecting update site
+        i      = numpy.random.randint(0,N) # selecting update site
         Xa     = X[i]
         X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i

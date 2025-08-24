@@ -47,11 +47,18 @@ def main():
     print("* Running simulation... Total time steps = %d" % (int(numpy.round(args.tTotal / args.dt))))
     simulation_func = cp.Get_Simulation_Func(args)
     sim_time_start  = time.monotonic()
+
+    
     with open(args.spkFileName, 'w') if args.writeOnRun and args.saveSites else contextlib.nullcontext(sys.stdout) as spk_file:
         if args.writeOnRun and args.saveSites:
             print('  ... writing file ',args.spkFileName,' during simulation')
         with contextlib.redirect_stdout(spk_file):
             rho, X_data     = simulation_func(**io.keep_keys(dict(**args),io.get_func_param(simulation_func)))
+    
+    ##### FOR DEBUG ... disable redirection of stdout
+    #rho, X_data     = simulation_func(**io.keep_keys(dict(**args),io.get_func_param(simulation_func)))
+
+
     sim_time_end    = time.monotonic()
     print("* End of simulation... Total time: {}".format(datetime.timedelta(seconds=sim_time_end - sim_time_start)))
 

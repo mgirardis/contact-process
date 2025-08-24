@@ -5,7 +5,10 @@ if [ -f "$HOME/pylocal/bin/activate" ] || [ -z "${VIRTUAL_ENV}" ]; then
     . "$HOME/pylocal/bin/activate"
 fi
 
+#export NUMBA_LOG_LEVEL=DEBUG
+#export NUMBA_DEBUGINFO=1
 
 echo Starting script
 
 python -OO "$@"
+
