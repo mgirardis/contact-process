@@ -3,6 +3,7 @@ import numpy
 import scipy.stats
 import scipy.signal
 from numba import njit
+from numba.typed import List
 from enum import IntEnum
 from modules.io import structtype
 
@@ -73,7 +74,6 @@ def calc_random_positions(N):
         r[i,1] = numpy.random.rand()*Ly
     return r
 
-@njit
 def calc_position(N, position:PositionType):
     if position == PositionType.RING:
         r = calc_1d_positions_periodicBC(N)
@@ -87,17 +87,14 @@ def calc_position(N, position:PositionType):
         raise ValueError('unknown position type')
     return r
 
-@njit
 def calc_correlation_function_MF(C,avg_same_distance=True, position:PositionType = 0):
     r = calc_position(C.shape[0], position)
     return calc_correlation_function_numba(C,r,avg_same_distance)
 
-@njit
 def calc_correlation_function_1d_periodicBC(C,avg_same_distance=True,position:PositionType = 1):
     r = calc_position(C.shape[0], position)
     return calc_correlation_function_numba(C,r,avg_same_distance)
 
-@njit
 def calc_correlation_function_1d_freeBC(C,avg_same_distance=True,position:PositionType = 1):
     r = calc_position(C.shape[0], position)
     return calc_correlation_function_numba(C,r,avg_same_distance)
@@ -105,16 +102,18 @@ def calc_correlation_function_1d_freeBC(C,avg_same_distance=True,position:Positi
 @njit
 def calc_correlation_function_numba(C,r,avg_same_distance):
     N  = C.shape[0]
-    s  = [] # we are defining C(s) as the correlation function
-    Cf = [] # we are defining C(s) as the correlation function
+    s  = [] #List.empty_list(numpy.float64) # we are defining C(s) as the correlation function
+    Cf = [] #List.empty_list(numpy.float64) # we are defining C(s) as the correlation function
     for i in range(N):
         for j in range(i+1,N):
             s.append(numpy.linalg.norm(r[i,:]-r[j,:]))# distance between i,j
             Cf.append(C[i,j])
-    k = numpy.argsort(numpy.array(s))
     if avg_same_distance:
-        return calc_average_same_distance(numpy.array(s)[k],numpy.array(Cf)[k])
+        s_un,Cf_avg,Cf_std = calc_average_same_distance(numpy.array(s),numpy.array(Cf))
+        k                  = numpy.argsort(s_un)
+        return s_un[k],Cf_avg[k],Cf_std[k]
     else:
+        k = numpy.argsort(numpy.array(s))
         return numpy.array(s)[k],numpy.array(Cf)[k],numpy.zeros_like(k,dtype=numpy.float64)
 
 @njit
@@ -128,9 +127,9 @@ def calc_average_same_distance(s, Cf):
     Cf_sorted = Cf[idx]
 
     # Initialize output lists
-    s_un   = []
-    Cf_avg = []
-    Cf_std = []
+    s_un   = []#List.empty_list(numpy.float64)
+    Cf_avg = []#List.empty_list(numpy.float64)
+    Cf_std = []#List.empty_list(numpy.float64)
 
     # Average all Cf values that share the same s
     i = 0

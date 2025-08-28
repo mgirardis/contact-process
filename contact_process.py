@@ -24,14 +24,16 @@ def main():
     parser = argparse.ArgumentParser(description='Contact process in 1+1 dimensions or mean-field all-to-all graph\n\n(l_c=3.297848 for ring; l_c=1 for mean-field)',formatter_class=argparse.RawTextHelpFormatter)
     parser = io.add_simulation_parameters(parser)
 
-    args             = io.namespace_to_structtype(parser.parse_args())
-    args.graph       = cp.str_to_GraphType(args.graph)
-    args.docstring   = io.get_help_string(parser)
-    args.X0Rand      = not args.noX0Rand
-    args.expandtime  = not cp.is_parallel_update(args.update)
-    args.dt          = cp.Get_Simulation_Timescale(args)
-    args.outputFile  = io.get_new_file_name(io.get_output_filename(args.outputFile))
-    args.spkFileName = args.outputFile.replace('.mat','_spk.txt') if args.writeOnRun else ''
+    args              = io.namespace_to_structtype(parser.parse_args())
+    args.sim          = cp.str_to_SimulationType(args.sim)
+    args.graph        = cp.str_to_GraphType(args.graph)
+    args.iterdynamics = cp.str_to_StateIterType(args.iterdynamics)
+    args.docstring    = io.get_help_string(parser)
+    args.X0Rand       = not args.noX0Rand
+    args.expandtime   = not cp.is_parallel_update(args.update)
+    args.dt           = cp.Get_Simulation_Timescale(args)
+    args.outputFile   = io.get_new_file_name(io.get_output_filename(args.outputFile))
+    args.spkFileName  = args.outputFile.replace('.mat','_spk.txt') if args.writeOnRun else ''
 
     #print('f=',args.outputFile)
     #print(len(args.outputFile))
@@ -48,8 +50,8 @@ def main():
     simulation_func = cp.Get_Simulation_Func(args)
     sim_time_start  = time.monotonic()
 
-    
-    with open(args.spkFileName, 'w') if args.writeOnRun and args.saveSites else contextlib.nullcontext(sys.stdout) as spk_file:
+
+    with (open(args.spkFileName, 'w') if (args.writeOnRun and args.saveSites) else contextlib.nullcontext(sys.stdout)) as spk_file:
         if args.writeOnRun and args.saveSites:
             print('  ... writing file ',args.spkFileName,' during simulation')
         with contextlib.redirect_stdout(spk_file):

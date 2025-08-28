@@ -9,7 +9,16 @@ class GraphType(IntEnum):
     RING     = 1
     RINGFREE = 2
 
+class StateIterType(IntEnum):
+    TOME_OLIVEIRA = 0
+    MARRO_DICKMAN = 1
+
+class SimulationType(IntEnum):
+    TIMEEVO = 0
+    AVAL    = 1
+
 def str_to_GraphType(graph_str):
+    graph_str = graph_str.lower()
     if (graph_str == 'alltoall') or (graph_str == 'mf'):
         return GraphType.ALLTOALL
     elif (graph_str == 'ring'):
@@ -19,16 +28,23 @@ def str_to_GraphType(graph_str):
     else:
         raise ValueError(f'Unknown graph type: {graph_str}')
 
-def GraphType_to_str(graph:GraphType):
-    return graph.name.lower()
-    #if graph == GraphType.ALLTOALL:
-    #    return 'alltoall'
-    #elif graph == GraphType.RING:
-    #    return 'ring'
-    #elif graph == GraphType.RINGFREE:
-    #    return 'ringfree'
-    #else:
-    #    raise ValueError(f'Unknown graph type: {graph}')
+def str_to_SimulationType(sim_str):
+    sim_str = sim_str.lower()
+    if (sim_str == 'timeevo'):
+        return SimulationType.TIMEEVO
+    elif (sim_str == 'aval'):
+        return SimulationType.AVAL
+    else:
+        raise ValueError(f'Unknown simulation type: {sim_str}')
+
+def str_to_StateIterType(itype_str):
+    itype_str = itype_str.lower()
+    if (itype_str == 'tome_oliveira') or (itype_str == 'to') or (itype_str == 'tomeoliveira'):
+        return StateIterType.TOME_OLIVEIRA
+    elif (itype_str == 'marro_dickman') or (itype_str == 'md') or (itype_str == 'marrodickman'):
+        return StateIterType.MARRO_DICKMAN
+    else:
+        raise ValueError(f'Unknown state iterator type: {itype_str}')
 
 def is_parallel_update(update):
     return (update == 'par') or (update == 'parallel')
@@ -91,59 +107,53 @@ def get_ordered_state(X,f_act):
         X[i] = 1.0
     for i in range(K,N):
         X[i] = 0.0
+    return X
 
 @njit
 def get_random_state(X,f_act):
     # X -> site vector (in/out parameter); numpy.ndarray
     # f_act -> fraction of active elements
     N = len(X)
-    get_ordered_state(X,f_act)
+    X = get_ordered_state(X,f_act)
     for i in range(N-1):
         #j = random.randint(i, N-1)
         j = numpy.random.randint(i, N)
         X[i],X[j] = X[j],X[i] # Shuffle X in-place using Fisher-Yates
-    #return X
+    return X
 
 type_X_data_item = types.Tuple((types.float64, types.int64, types.int64))
 type_X_data      = types.ListType(type_X_data_item)
 
-@njit(types.void(type_X_data,types.int64,types.int64,types.int64))
+@njit(type_X_data(type_X_data,types.float64,types.int64,types.int64))
 def save_spk_data_fake(X_data, t, k, X):
-    return None
+    return X_data
 
-@njit(types.void(type_X_data,types.int64,types.int64,types.int64))
+@njit(type_X_data(type_X_data,types.float64,types.int64,types.int64))
 def save_spk_data(X_data, t, k, X):
     if X:
         X_data.append((t,k,X))
         #X_values.append(X)
         #X_ind.append(k)
         #X_time.append(t)
-    return None
+    return X_data
 
-@njit(types.void(type_X_data,types.int64,types.int64,types.int64))
-def write_spk_data_fake(spkFile,t,k,X):
-    return None
+@njit(type_X_data(type_X_data,types.float64,types.int64,types.int64))
+def write_spk_data_fake(X_data,t,k,X):
+    return X_data
 
-@njit(types.void(type_X_data,types.int64,types.int64,types.int64))
-def write_spk_data(spkFile,t,k,X):
+@njit(type_X_data(type_X_data,types.float64,types.int64,types.int64))
+def write_spk_data(X_data,t,k,X):
     if X:
         #spkFile.write(str(t) + ',' + str(k) + ',' + str(X) + '\n')
         print(t,',',k,',',X)
-    return None
+    return X_data
 
 @njit(type_X_data(types.int64[:],types.boolean))
 def get_initial_network_state_for_output(X, saveSites):
-    #if saveSites:
-    #    X_values      = numpy.array([ x for x   in X            if x ],dtype=numpy.int64)
-    #    X_ind         = numpy.array([ i for i,x in enumerate(X) if x ],dtype=numpy.int64)
-    #    X_time        = numpy.array([ 0 for x   in X            if x ],dtype=numpy.int64)
-    #else:
-    #    X_values, X_ind, X_time = numpy.array([],dtype=numpy.int64), numpy.array([],dtype=numpy.int64), numpy.array([],dtype=numpy.int64)
-    #return X_values, X_ind, X_time
     X_data = List.empty_list(type_X_data_item) #numpy.empty((0,3),dtype=numpy.int64) # t,k,X
-    if saveSites:
-        for k,x in enumerate(X):
-            save_spk_data(X_data, x, k, 0)
+    #########if saveSites:
+    #########    for k,x in enumerate(X):
+    #########        save_spk_data(X_data, x, k, 0)
     return X_data
 
 type_write_spk_data = typeof(write_spk_data)
@@ -235,26 +245,75 @@ def bool2int(x):
     return 1 if x else 0
 
 @njit
-def state_iter(X,n,inv_l):
+def state_iter_Tome_Oliveira(X,n,inv_l):
     # described in pg 308pdf/402 Tome Oliveira book before eq 13.6
     # At each time step we choose a site at random, say site i.
-    #   (a) If i is occupied, than we generate a random number xi uniformly distributed in the interval [0;1].
-    #       If xi <= 1/lambda, the particle is annihilated and the site becomes empty.
+    #   (a) If i is occupied, than we generate a random number r uniformly distributed in the interval [0;1].
+    #       If r <= 1/lambda = inv_l, the particle is annihilated and the site becomes empty.
     #       Otherwise, the site remains occupied.
     #   (b) If i is empty, then one of its neighbors is chosen at random.
     #       If the neighboring site is occupied then we create a particle at site i.
     #       Otherwise, the site i remains empty. 
+    #
     # X -> state of node
     # n -> fraction of active neighbors of X
     # inv_l -> inverse of activation rate: inv_l = 1/lambda = alpha in the book
+    #
+    # This algorithm generates, at each time step, a probability of creation Pc:
+    # Pc = P[ Xi(t+1)=1 and Xi(t)=0 ] = P[Xi(t)=0] * P[r<n]        = (1-rho) * n  [[[ rho -> fraction of active sites in total ]]]
+    # and a probability of annihilation Pa:
+    # Pa = P[ Xi(t+1)=0 and Xi(t)=1 ] = P[Xi(t)=1] * P[r<1/lambda] = rho / lambda
+    # these values contrast with Pc and Pa from the Dickman algorithm (see state_iter_Dickman)
+    # and end-up generating a different critical point lambda_c ~ 2  [[[ periodic ring, sequential update, Dickman's lambda_c ~ 3.3 ]]]
+    #
     # returns the new state based on the previous state X for a given node
     #         site is occupied, so it eliminates               site is empty, so it creates
     #         the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
     #return bool2int( numpy.random.random() > inv_l ) if X else bool2int(numpy.random.random() < n)
     if X: # site is occupied
-        return bool2int(numpy.random.random() > inv_l)
+        return bool2int(numpy.random.random() > inv_l) # r > 1/lambda: stays occupied; r < 1/lambda: annihilation
     else: # site is empty
-        return bool2int(numpy.random.random() < n)
+        return bool2int(numpy.random.random() < n) # r < n: infection; r>n: stays empty
+
+@njit
+def state_iter_Dickman(X,n,v):
+    # described in pg 178pdf/162book Marro & Dickman book
+    # Each step involves randomly choosing a process - creation with probability v=lambda/(1+lambda),
+    # annihilation with probability 1-v -- and a lattice site x.
+    # In an annihilation event, the particle (if any) at x is removed.
+    # Creation proceeds only if x is occupied and a randomly chosen nearest-neighbor y is vacant;
+    # if so, a new particle is placed at y.
+    # Time is incremented by At after each step, successful or not.
+    # (Normally one takes Delta t = 1/N on a lattice of N sites, so that a unit time interval,
+    # or MC step, corresponds, on average, to one attempted event per site.)
+    #
+    # X -> state of node
+    # n -> fraction of active neighbors of X
+    # inv_l -> inverse of activation rate: inv_l = 1/lambda = alpha in the book
+    #
+    # This algorithm generates, at each time step, a probability of creation Pc:
+    # Pc = P[ e=c and Xi(t)=1 and Xj(t)=0 ] = P[e=c] * P[Xi(t)=1] * P[Xj(t)=0] = v * rho * (1-n)  [[[ rho -> fraction of active sites in total; e=event (c or a) ]]]
+    #      I assume, I can invert the order of neighbor and selected site, so that
+    # Pc = v * (1-rho) * n  [[[ i.e., current selected site is inactive and there is an active neighbor ]]]
+    # and a probability of annihilation Pa:
+    # Pa = P[ e=a and Xi(t)=1 ]             = P[e=a] * P[Xi(t)=1]              = (1-v)*rho
+    # these values contrast with Pc and Pa from the Tome-Oliveira algorithm (see state_iter_Tome_Oliveira)
+    # and generate (hopefully) lambda_c ~ 3.3  [[[ periodic ring, sequential update ]]]
+    #
+    # returns the new state based on the previous state X for a given node
+    #         site is occupied, so it eliminates               site is empty, so it creates
+    #         the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
+    #v = 1.0 / (1.0 + inv_l) # v === lambda / (1+lambda); but as a function of inv_l = 1/lambda
+    if X: # site is occupied
+          # Prob = rho
+          # then a particle is annihilated with chance (1-v) [[[ hence, r > v; also, implicit is the '*rho' bit in the if condition ]]]
+          # otherwise nothing happens (X=1 remains)
+        return bool2int(numpy.random.random() > v)
+    else: # site is empty
+          # Prob = 1 - rho
+          # then a particle is created with chance v*n [[[*(1-rho), implicit in the if condition]]]
+          # otherwise, nothing happens (X=0 remains)
+        return bool2int(numpy.random.random() < v*n)
 
 @njit
 def stack_add(stack,k):
@@ -297,17 +356,22 @@ def CyclicStack_GetRandom(stack, count):
 #    return count
 
 @njit
-def restart_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
-    if sum_X < 1:
-        if is_aval_sim:
+def check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
+    # returns True if activity must continue
+    #         False if activity should die out
+    if sum_X < 1: # activity died out
+        if is_aval_sim: # if it is a simulation for avalanches
+            # we always restart the activity
             sum_X                = 1
             X[int((len(X)-1)/2)] = 1 # seeding the middle of the network
         else:
+            # otherwise, we pick a state from the memory
+            # only if we have memory states (M>0)
             if M == 0: # absorbing state reached and no memory to restart
-                return False
-            get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
+                return False, X, sum_X
+            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
             sum_X = sum(X)
-    return True
+    return True, X, sum_X
 
 @njit
 def get_IC(X0, fX0, X0Rand, N):
@@ -315,17 +379,22 @@ def get_IC(X0, fX0, X0Rand, N):
     X  = numpy.zeros(N,dtype=numpy.int64)
     if X0Rand:
         #X[random.sample(range(N),k=int(fX0*N))] = 1.0
-        get_random_state(X,fX0)
+        X = get_random_state(X,fX0)
     else:
-        get_ordered_state(X,fX0)
+        X = get_ordered_state(X,fX0)
     return X
 
 @njit
-def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRun,spkFileName):
+def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     # all sites update in the same time step -- matches the GL model
     X           = get_IC(X0, fX0, X0Rand, N)     
-    is_aval_sim = sim == 'aval'
-    alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+    is_aval_sim = sim == SimulationType.AVAL
+    if iterdynamics == StateIterType.TOME_OLIVEIRA:
+        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+        state_iter  = state_iter_Tome_Oliveira
+    else:
+        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
+        state_iter  = state_iter_Dickman
     N_fl        = float(N)
     sum_X       = 0
     rho_prev    = float(sum(X)) / N_fl
@@ -338,7 +407,8 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
             X[i]   = state_iter(X[i],rho_prev,alpha)
             sum_X += X[i]
         # updates rho_temp and X as needed if the network activity must be restarted
-        if not restart_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
             break
         #rho_temp        = float(rho_temp) / N_fl
         rho_prev        = float(sum_X) / N_fl
@@ -346,22 +416,26 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = List.empty_list(type_X_data_item) #get_initial_network_state_for_output(X,saveSites and not writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
 
     rho        = numpy.zeros(tTotal-tTrans,dtype=numpy.float64)
     rho[0]     = rho_prev
+    for i in range(N):
+        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho_prev)
     for t in range(1,tTotal-tTrans):
         sum_X = 0
         for i in range(N):
-            X[i] = state_iter(X[i],rho_prev,alpha)
+            X[i]   = state_iter(X[i],rho_prev,alpha)
             sum_X += X[i]
-            save_spk_time(X_data, t, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-            write_spk_time(X_data, t, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+            X_data = save_spk_time(X_data, t, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+            _      = write_spk_time(X_data, t, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
         # updates rho_temp and X as needed if the network activity must be restarted
-        if not restart_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
             break
         rho_prev      = float(sum_X) / N_fl
         rho[t]        = rho_prev
@@ -370,10 +444,15 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,sim,saveSites,writeOnRu
     return rho, X_data
 
 @njit
-def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,spkFileName):
+def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,saveSites,writeOnRun,spkFileName):
     # only 1 site is attempted update at each time step
     X          = get_IC(X0, fX0, X0Rand, N)
-    alpha      = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+    if iterdynamics == StateIterType.TOME_OLIVEIRA:
+        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+        state_iter  = state_iter_Tome_Oliveira
+    else:
+        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
+        state_iter  = state_iter_Dickman
     N_fl       = float(N)
     tTrans_eff = int(numpy.round(tTrans / dt))
     tTotal_eff = int(numpy.round(tTotal / dt))
@@ -391,18 +470,21 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,
         if sum_X < 1:
             if M == 0:
                 break
-            get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
+            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
             sum_X = sum(X)
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
 
     rho           = numpy.zeros(tTotal_eff-tTrans_eff,dtype=numpy.float64)
     sum_X         = sum(X)
     rho[0]        = float(sum_X) / N_fl
+    for i in range(N):
+        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
@@ -411,12 +493,12 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,
         Xa     = X[i]
         X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        save_spk_time(X_data, t*dt, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        write_spk_time(X_data, t*dt, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        X_data = save_spk_time(X_data, t*dt, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data, t*dt, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
         if sum_X < 1:
             if M == 0:
                 break
-            get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
+            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
             sum_X = sum(X)
         rho[t]              = float(sum_X) / N_fl
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
@@ -424,11 +506,16 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,saveSites,writeOnRun,
     return rho, X_data
 
 @njit
-def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSites,writeOnRun,spkFileName):
+def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     X             = get_IC(X0, fX0, X0Rand, N)
     neigh         = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
-    is_aval_sim   = sim == 'aval'
-    alpha         = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+    is_aval_sim   = sim == SimulationType.AVAL
+    if iterdynamics == StateIterType.TOME_OLIVEIRA:
+        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+        state_iter  = state_iter_Tome_Oliveira
+    else:
+        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
+        state_iter  = state_iter_Dickman
     N_fl          = float(N)
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
@@ -438,17 +525,21 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
         for i in range(N):
             X[i]   = state_iter(X[i],sum(X_prev[neigh[i]])/float(len(neigh[i])),alpha)
             sum_X += X[i]
-        if not restart_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
             break
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
     
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
     
     rho           = numpy.zeros(tTotal-tTrans, dtype=numpy.float64)
     rho[0]        = float(sum(X)) / N_fl
+    for i in range(N):
+        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal-tTrans):
@@ -458,9 +549,10 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
             # need to fix this line to use X_prev in the num of active neighbors
             X[i]   = state_iter(X[i],sum(X_prev[neigh[i]])/float(len(neigh[i])),alpha)
             sum_X += X[i]
-            save_spk_time(X_data, t, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-            write_spk_time(X_data, t, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        if not restart_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
+            X_data = save_spk_time(X_data, t, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+            _      = write_spk_time(X_data, t, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
             break
         rho[t]        = float(sum_X) / N_fl
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
@@ -468,10 +560,15 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,sim,saveSi
     return rho, X_data
 
 @njit
-def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,saveSites,writeOnRun,spkFileName):
+def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynamics,saveSites,writeOnRun,spkFileName):
     X          = get_IC(X0,fX0,X0Rand,N)
     neigh      = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
-    alpha      = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+    if iterdynamics == StateIterType.TOME_OLIVEIRA:
+        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+        state_iter  = state_iter_Tome_Oliveira
+    else:
+        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
+        state_iter  = state_iter_Dickman
     N_fl       = float(N)
     tTrans_eff = int(numpy.round(tTrans / dt))
     tTotal_eff = int(numpy.round(tTotal / dt))
@@ -487,17 +584,21 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,saveSite
         if sum_X < 1:
             if M == 0:
                 break
-            get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
+            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
             sum_X = sum(X)
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
 
     rho           = numpy.zeros(tTotal_eff-tTrans_eff, dtype=numpy.float64)
     sum_X         = sum(X)
+    # saving IC
     rho[0]        = float(sum_X) / N_fl
+    for i in range(N):
+        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
@@ -506,13 +607,13 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,saveSite
         Xa     = X[i]
         X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        save_spk_time(X_data, t*dt, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        write_spk_time(X_data, t*dt, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        X_data = save_spk_time(X_data, t*dt, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data, t*dt, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
         #sum_of_X = sum(X)
         if sum_X < 1.0:
             if M == 0:
                 break
-            get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
+            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
             sum_X = sum(X)
         rho[t] = float(sum_X) / N_fl
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
