@@ -106,6 +106,7 @@ def save_simulation_file(argv, args, rho, X_data):
             X_data = X_data.reshape((0,3))
     args.sim          = args.sim.name.lower()          if hasattr(args.sim         ,'name') else str(args.sim         ).lower()
     args.graph        = args.graph.name.lower()        if hasattr(args.graph       ,'name') else str(args.graph       ).lower()
+    args.update       = args.update.name.lower()       if hasattr(args.update      ,'name') else str(args.update      ).lower()
     args.iterdynamics = args.iterdynamics.name.lower() if hasattr(args.iterdynamics,'name') else str(args.iterdynamics).lower()
     scipy.io.savemat(args.outputFile,dict(cmd_line=' '.join(argv),time=numpy.arange(len(rho))*args.dt,rho=rho, X_values=X_data[:,2], X_ind=X_data[:,1], X_time=X_data[:,0],**args),long_field_names=True,do_compression=True)
     print(f'  ... simulation file saved ::: {args.outputFile}')

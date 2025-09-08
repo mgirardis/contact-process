@@ -1,5 +1,4 @@
 import numpy
-import random
 from enum import IntEnum
 from numba import njit,types,typeof
 from numba.typed import List
@@ -16,6 +15,10 @@ class StateIterType(IntEnum):
 class SimulationType(IntEnum):
     TIMEEVO = 0
     AVAL    = 1
+
+class UpdateType(IntEnum):
+    PARALLEL = 0
+    SEQUENTIAL = 1
 
 def str_to_GraphType(graph_str):
     graph_str = graph_str.lower()
@@ -37,6 +40,15 @@ def str_to_SimulationType(sim_str):
     else:
         raise ValueError(f'Unknown simulation type: {sim_str}')
 
+def str_to_UpdateType(updt_str):
+    updt_str = updt_str.lower()
+    if (updt_str == 'parallel') or (updt_str == 'par'):
+        return UpdateType.PARALLEL
+    elif (updt_str == 'sequential') or (updt_str == 'seq'):
+        return UpdateType.SEQUENTIAL
+    else:
+        raise ValueError(f'Unknown update type: {updt_str}')
+
 def str_to_StateIterType(itype_str):
     itype_str = itype_str.lower()
     if (itype_str == 'tome_oliveira') or (itype_str == 'to') or (itype_str == 'tomeoliveira'):
@@ -47,13 +59,14 @@ def str_to_StateIterType(itype_str):
         raise ValueError(f'Unknown state iterator type: {itype_str}')
 
 def is_parallel_update(update):
-    return (update == 'par') or (update == 'parallel')
+    return update == UpdateType.PARALLEL
 
 def Get_Simulation_Func(args):
-    if args.sim == 'aval':
+    if args.sim == SimulationType.AVAL:
         if not is_parallel_update(args.update):
-            args.update = 'par' # forcing parallel update for avalanche
-            print('forcing parallel update because sim == %s'%args.sim)
+            args.update     = UpdateType.PARALLEL # forcing parallel update for avalanche
+            args.expandtime = False
+            print(' ::: WARNING ::: forcing parallel update and no expandtime because sim == %s'%args.sim)
     if args.graph == GraphType.ALLTOALL:
         if is_parallel_update(args.update):
             return Run_MF_parallel
@@ -66,7 +79,7 @@ def Get_Simulation_Func(args):
             return Run_RingGraph_sequential
 
 def Get_Simulation_Timescale(args):
-    if (args.update == 'par') or (args.update == 'parallel'):
+    if is_parallel_update(args.update):
         return 1.0
     else:
         if args.expandtime:
@@ -99,17 +112,17 @@ def Get_Simulation_Timescale(args):
 #        X[i] = 1.0
 
 
-@njit
+@njit(types.int64[:](types.int64[:],types.float64))
 def get_ordered_state(X,f_act):
     N = len(X)
     K = int(f_act * N)
     for i in range(K):
-        X[i] = 1.0
+        X[i] = 1
     for i in range(K,N):
-        X[i] = 0.0
+        X[i] = 0
     return X
 
-@njit
+@njit(types.int64[:](types.int64[:],types.float64))
 def get_random_state(X,f_act):
     # X -> site vector (in/out parameter); numpy.ndarray
     # f_act -> fraction of active elements
@@ -148,13 +161,6 @@ def write_spk_data(X_data,t,k,X):
         print(t,',',k,',',X)
     return X_data
 
-@njit(type_X_data(types.int64[:],types.boolean))
-def get_initial_network_state_for_output(X, saveSites):
-    X_data = List.empty_list(type_X_data_item) #numpy.empty((0,3),dtype=numpy.int64) # t,k,X
-    #########if saveSites:
-    #########    for k,x in enumerate(X):
-    #########        save_spk_data(X_data, x, k, 0)
-    return X_data
 
 type_write_spk_data = typeof(write_spk_data)
 type_save_spk_data  = typeof(save_spk_data)
@@ -171,6 +177,16 @@ def get_write_spike_data_functions(saveSites,writeOnRun):
         write_spk_time = write_spk_data_fake
         save_spk_time  = save_spk_data_fake
     return write_spk_time,save_spk_time
+
+@njit(type_X_data(types.int64[:],types.float64,types.boolean,types.boolean))
+def save_initial_network_state(X, t0, saveSites, writeOnRun):
+    write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
+    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    N                            = len(X)
+    for i in range(N):
+        X_data = save_spk_time( X_data, t0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data, t0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    return X_data
 
 
 @njit
@@ -240,70 +256,116 @@ def get_ring_neighbors_free(N):
     n[N-1,1] = N-2 # last site connects only to the left
     return n
 
-@njit(types.boolean(types.int64))
+@njit(types.int64(types.boolean))
 def bool2int(x):
     return 1 if x else 0
 
-@njit
+@njit(types.int64(types.int64,types.float64,types.float64))
 def state_iter_Tome_Oliveira(X,n,inv_l):
-    # described in pg 308pdf/402 Tome Oliveira book before eq 13.6
-    # At each time step we choose a site at random, say site i.
-    #   (a) If i is occupied, than we generate a random number r uniformly distributed in the interval [0;1].
-    #       If r <= 1/lambda = inv_l, the particle is annihilated and the site becomes empty.
-    #       Otherwise, the site remains occupied.
-    #   (b) If i is empty, then one of its neighbors is chosen at random.
-    #       If the neighboring site is occupied then we create a particle at site i.
-    #       Otherwise, the site i remains empty. 
-    #
-    # X -> state of node
-    # n -> fraction of active neighbors of X
-    # inv_l -> inverse of activation rate: inv_l = 1/lambda = alpha in the book
-    #
-    # This algorithm generates, at each time step, a probability of creation Pc:
-    # Pc = P[ Xi(t+1)=1 and Xi(t)=0 ] = P[Xi(t)=0] * P[r<n]        = (1-rho) * n  [[[ rho -> fraction of active sites in total ]]]
-    # and a probability of annihilation Pa:
-    # Pa = P[ Xi(t+1)=0 and Xi(t)=1 ] = P[Xi(t)=1] * P[r<1/lambda] = rho / lambda
-    # these values contrast with Pc and Pa from the Dickman algorithm (see state_iter_Dickman)
-    # and end-up generating a different critical point lambda_c ~ 2  [[[ periodic ring, sequential update, Dickman's lambda_c ~ 3.3 ]]]
-    #
-    # returns the new state based on the previous state X for a given node
-    #         site is occupied, so it eliminates               site is empty, so it creates
-    #         the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
+    """
+     described in pg 308pdf/402 Tome Oliveira book before eq 13.6
+     At each time step we choose a site at random, say site i.
+       (a) If i is occupied, than we generate a random number r uniformly distributed in the interval [0;1].
+           If r <= 1/lambda = inv_l, the particle is annihilated and the site becomes empty.
+           Otherwise, the site remains occupied.
+       (b) If i is empty, then one of its neighbors is chosen at random.
+           If the neighboring site is occupied then we create a particle at site i.
+           Otherwise, the site i remains empty. 
+    
+     X -> state of node
+     n -> fraction of active neighbors of X
+     inv_l -> inverse of activation rate: inv_l = 1/lambda = alpha in the book
+    
+     This algorithm generates, at each time step, a probability of creation Pc:
+     Pc = P[ Xi(t+1)=1 and Xi(t)=0 ] = P[Xi(t)=0] * P[r<n]        = (1-rho) * n  [[[ rho -> fraction of active sites in total ]]]
+     and a probability of annihilation Pa:
+     Pa = P[ Xi(t+1)=0 and Xi(t)=1 ] = P[Xi(t)=1] * P[r<1/lambda] = rho / lambda
+     these values contrast with Pc and Pa from the Dickman algorithm (see state_iter_Dickman)
+     and end-up generating a different critical point lambda_c ~ 2  [[[ periodic ring, sequential update, Dickman's lambda_c ~ 3.3 ]]]
+    
+     returns the new state based on the previous state X for a given node
+             site is occupied, so it eliminates               site is empty, so it creates
+             the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
+     """
     #return bool2int( numpy.random.random() > inv_l ) if X else bool2int(numpy.random.random() < n)
     if X: # site is occupied
         return bool2int(numpy.random.random() > inv_l) # r > 1/lambda: stays occupied; r < 1/lambda: annihilation
     else: # site is empty
         return bool2int(numpy.random.random() < n) # r < n: infection; r>n: stays empty
 
-@njit
-def state_iter_Dickman(X,n,v):
-    # described in pg 178pdf/162book Marro & Dickman book
-    # Each step involves randomly choosing a process - creation with probability v=lambda/(1+lambda),
-    # annihilation with probability 1-v -- and a lattice site x.
-    # In an annihilation event, the particle (if any) at x is removed.
-    # Creation proceeds only if x is occupied and a randomly chosen nearest-neighbor y is vacant;
-    # if so, a new particle is placed at y.
-    # Time is incremented by At after each step, successful or not.
-    # (Normally one takes Delta t = 1/N on a lattice of N sites, so that a unit time interval,
-    # or MC step, corresponds, on average, to one attempted event per site.)
-    #
-    # X -> state of node
-    # n -> fraction of active neighbors of X
-    # inv_l -> inverse of activation rate: inv_l = 1/lambda = alpha in the book
-    #
-    # This algorithm generates, at each time step, a probability of creation Pc:
-    # Pc = P[ e=c and Xi(t)=1 and Xj(t)=0 ] = P[e=c] * P[Xi(t)=1] * P[Xj(t)=0] = v * rho * (1-n)  [[[ rho -> fraction of active sites in total; e=event (c or a) ]]]
-    #      I assume, I can invert the order of neighbor and selected site, so that
-    # Pc = v * (1-rho) * n  [[[ i.e., current selected site is inactive and there is an active neighbor ]]]
-    # and a probability of annihilation Pa:
-    # Pa = P[ e=a and Xi(t)=1 ]             = P[e=a] * P[Xi(t)=1]              = (1-v)*rho
-    # these values contrast with Pc and Pa from the Tome-Oliveira algorithm (see state_iter_Tome_Oliveira)
-    # and generate (hopefully) lambda_c ~ 3.3  [[[ periodic ring, sequential update ]]]
-    #
-    # returns the new state based on the previous state X for a given node
-    #         site is occupied, so it eliminates               site is empty, so it creates
-    #         the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
-    #v = 1.0 / (1.0 + inv_l) # v === lambda / (1+lambda); but as a function of inv_l = 1/lambda
+@njit(types.int64(types.int64,types.float64,types.float64))
+def state_iter_Tome_Oliveira_mod(X,n,inv_l):
+    """
+     MODIFIED TO MATCH THE DICKMAN algorithm
+     described in pg 308pdf/402 Tome Oliveira book before eq 13.6
+     also matches the description in pg 77 (87 of pdf) of the Henkel-Hinrichsen-Lubeck book
+     [probabilities given after Eq. 3.35].
+     Tome-Oliveira description
+     [I believe they meant 1/(1+lambda) instead of 1/lambda;
+     and also, creation only if random neighbor is active AND probability lambda/(1+lambda)]:
+     At each time step we choose a site at random, say site i.
+       (a) If i is occupied, than we generate a random number r uniformly distributed in the interval [0;1].
+           If r <= 1/lambda = inv_l, the particle is annihilated and the site becomes empty.
+           Otherwise, the site remains occupied.
+       (b) If i is empty, then one of its neighbors is chosen at random.
+           If the neighboring site is occupied then we create a particle at site i.
+           Otherwise, the site i remains empty. 
+    
+     X -> state of node
+     n -> fraction of active neighbors of X
+     inv_l -> inverse of activation rate: inv_l = 1/lambda = alpha in the book
+    
+     This algorithm generates, at each time step, a probability of creation Pc:
+     Pc = P[ Xi(t+1)=1 and Xi(t)=0 ] = P[Xi(t)=0] * P[r<n]        = (1-rho) * n  [[[ rho -> fraction of active sites in total ]]]
+     and a probability of annihilation Pa:
+     Pa = P[ Xi(t+1)=0 and Xi(t)=1 ] = P[Xi(t)=1] * P[r<1/lambda] = rho / lambda
+     these values contrast with Pc and Pa from the Dickman algorithm (see state_iter_Dickman)
+     and end-up generating a different critical point lambda_c ~ 2  [[[ periodic ring, sequential update, Dickman's lambda_c ~ 3.3 ]]]
+    
+     returns the new state based on the previous state X for a given node
+             site is occupied, so it eliminates               site is empty, so it creates
+             the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
+    """
+    #return bool2int( numpy.random.random() > inv_l ) if X else bool2int(numpy.random.random() < n)
+    v = 1.0/(1.0 + inv_l)
+    if X: # site is occupied
+        return bool2int(numpy.random.random() > inv_l*v) # r > 1/lambda: stays occupied; r < 1/lambda: annihilation
+    else: # site is empty
+        return bool2int(numpy.random.random() < n*v) # r < n: infection; r>n: stays empty
+
+@njit(types.int64(types.int64,types.float64,types.float64))
+def state_iter_Dickman_mod(X,n,v):
+    """
+    SEEMS TO HAVE WRONG RATES (check debug table of transition rates)
+     this code was adapted from what was
+     described in pg 178pdf/162book Marro & Dickman book.
+     Each step involves randomly choosing a process - creation with probability v=lambda/(1+lambda),
+     annihilation with probability 1-v -- and a lattice site x.
+     In an annihilation event, the particle (if any) at x is removed.
+     Creation proceeds only if x is occupied and a randomly chosen nearest-neighbor y is vacant;
+     if so, a new particle is placed at y.
+     Time is incremented by At after each step, successful or not.
+     (Normally one takes Delta t = 1/N on a lattice of N sites, so that a unit time interval,
+     or MC step, corresponds, on average, to one attempted event per site.)
+    
+     X -> state of node
+     n -> fraction of active neighbors of X
+     v -> lambda / (1+lambda) (creation event probability)
+    
+     This algorithm generates, at each time step, a probability of creation Pc:
+     Pc = P[ e=c and Xi(t)=1 and Xj(t)=0 ] = P[e=c] * P[Xi(t)=1] * P[Xj(t)=0] = v * rho * (1-n)  [[[ rho -> fraction of active sites in total; e=event (c or a) ]]]
+          I assume, I can invert the order of neighbor and selected site, so that
+     Pc = v * (1-rho) * n  [[[ i.e., current selected site is inactive and there is an active neighbor ]]]
+     and a probability of annihilation Pa:
+     Pa = P[ e=a and Xi(t)=1 ]             = P[e=a] * P[Xi(t)=1]              = (1-v)*rho
+     these values contrast with Pc and Pa from the Tome-Oliveira algorithm (see state_iter_Tome_Oliveira)
+     and generate (hopefully) lambda_c ~ 3.3  [[[ periodic ring, sequential update ]]]
+    
+     returns the new state based on the previous state X for a given node
+             site is occupied, so it eliminates               site is empty, so it creates
+             the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
+    v = 1.0 / (1.0 + inv_l) # v === lambda / (1+lambda); but as a function of inv_l = 1/lambda
+    """
     if X: # site is occupied
           # Prob = rho
           # then a particle is annihilated with chance (1-v) [[[ hence, r > v; also, implicit is the '*rho' bit in the if condition ]]]
@@ -314,6 +376,63 @@ def state_iter_Dickman(X,n,v):
           # then a particle is created with chance v*n [[[*(1-rho), implicit in the if condition]]]
           # otherwise, nothing happens (X=0 remains)
         return bool2int(numpy.random.random() < v*n)
+
+@njit(types.int64(types.int64,types.float64,types.float64))
+def state_iter_Dickman(X, n, v):
+    """
+     described in pg 178pdf/162book Marro & Dickman book
+     Each step involves randomly choosing a process - creation with probability v=lambda/(1+lambda),
+     annihilation with probability 1-v -- and a lattice site x.
+     In an annihilation event, the particle (if any) at x is removed.
+     Creation proceeds only if x is occupied and a randomly chosen nearest-neighbor y is vacant;
+     if so, a new particle is placed at y.
+     Time is incremented by At after each step, successful or not.
+     (Normally one takes Delta t = 1/N on a lattice of N sites, so that a unit time interval,
+     or MC step, corresponds, on average, to one attempted event per site.)
+    
+     X -> state of node
+     n -> fraction of active neighbors of X
+     v -> lambda / (1+lambda) (creation event probability)
+    
+     This algorithm generates, at each time step, a probability of creation Pc:
+     Pc = P[ e=c and Xi(t)=1 and Xj(t)=0 ] = P[e=c] * P[Xi(t)=1] * P[Xj(t)=0] = v * rho * (1-n)  [[[ rho -> fraction of active sites in total; e=event (c or a) ]]]
+          I assume, I can invert the order of neighbor and selected site, so that
+     Pc = v * (1-rho) * n  [[[ i.e., current selected site is inactive and there is an active neighbor ]]]
+     and a probability of annihilation Pa:
+     Pa = P[ e=a and Xi(t)=1 ]             = P[e=a] * P[Xi(t)=1]              = (1-v)*rho
+     these values contrast with Pc and Pa from the Tome-Oliveira algorithm (see state_iter_Tome_Oliveira)
+     and generate (hopefully) lambda_c ~ 3.3  [[[ periodic ring, sequential update ]]]
+    
+     returns the new state based on the previous state X for a given node
+             site is occupied, so it eliminates               site is empty, so it creates
+             the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
+    v = 1.0 / (1.0 + inv_l) # v === lambda / (1+lambda); but as a function of inv_l = 1/lambda
+    """
+    if numpy.random.random() < v:
+        # Birth attempt
+        return 1 if ((X == 0) and (numpy.random.random() < n)) else X
+    else:
+        # Death attempt
+        return 0 if X == 1 else X
+
+
+#type_state_iter = typeof(state_iter_Dickman)
+type_state_iter = types.FunctionType(types.int64(types.int64, types.float64, types.float64))
+@njit(type_state_iter(types.int64))
+def get_site_state_iterator(iterdynamics):
+    if iterdynamics == StateIterType.TOME_OLIVEIRA:
+        state_iter  = state_iter_Tome_Oliveira_mod
+    else:
+        state_iter  = state_iter_Dickman
+    return state_iter
+
+@njit(types.float64(types.int64, types.float64))
+def get_site_state_iterator_alpha(iterdynamics,l):
+    if iterdynamics == StateIterType.TOME_OLIVEIRA:
+        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
+    else:
+        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
+    return alpha
 
 @njit
 def stack_add(stack,k):
@@ -373,7 +492,7 @@ def check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
             sum_X = sum(X)
     return True, X, sum_X
 
-@njit
+@njit(types.int64[:](types.int64,types.float64,types.boolean,types.int64))
 def get_IC(X0, fX0, X0Rand, N):
     X0 = int(X0)
     X  = numpy.zeros(N,dtype=numpy.int64)
@@ -387,18 +506,13 @@ def get_IC(X0, fX0, X0Rand, N):
 @njit
 def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     # all sites update in the same time step -- matches the GL model
-    X           = get_IC(X0, fX0, X0Rand, N)     
-    is_aval_sim = sim == SimulationType.AVAL
-    if iterdynamics == StateIterType.TOME_OLIVEIRA:
-        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
-        state_iter  = state_iter_Tome_Oliveira
-    else:
-        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
-        state_iter  = state_iter_Dickman
-    N_fl        = float(N)
-    sum_X       = 0
-    rho_prev    = float(sum(X)) / N_fl
-    # rho_memory OLD -> rho_memory[0] ### this is the stack
+    X                   = get_IC(X0, fX0, X0Rand, N)     
+    is_aval_sim         = sim == SimulationType.AVAL
+    state_iter          = get_site_state_iterator(iterdynamics)
+    alpha               = get_site_state_iterator_alpha(iterdynamics,l)
+    N_fl                = float(N)
+    sum_X               = 0
+    rho_prev            = float(sum(X)) / N_fl
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans):
@@ -416,14 +530,11 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,sim,saveSi
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = List.empty_list(type_X_data_item) #get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
 
-    rho        = numpy.zeros(tTotal-tTrans,dtype=numpy.float64)
-    rho[0]     = rho_prev
-    for i in range(N):
-        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    rho                 = numpy.zeros(tTotal-tTrans,dtype=numpy.float64)
+    rho[0]              = rho_prev
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho_prev)
     for t in range(1,tTotal-tTrans):
@@ -446,18 +557,14 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,sim,saveSi
 @njit
 def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,saveSites,writeOnRun,spkFileName):
     # only 1 site is attempted update at each time step
-    X          = get_IC(X0, fX0, X0Rand, N)
-    if iterdynamics == StateIterType.TOME_OLIVEIRA:
-        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
-        state_iter  = state_iter_Tome_Oliveira
-    else:
-        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
-        state_iter  = state_iter_Dickman
-    N_fl       = float(N)
-    tTrans_eff = int(numpy.round(tTrans / dt))
-    tTotal_eff = int(numpy.round(tTotal / dt))
-    n_neigh    = N_fl - 1.0
-    sum_X      = sum(X)
+    X                   = get_IC(X0, fX0, X0Rand, N)
+    state_iter          = get_site_state_iterator(iterdynamics)
+    alpha               = get_site_state_iterator_alpha(iterdynamics,l)
+    N_fl                = float(N)
+    tTrans_eff          = int(numpy.round(tTrans / dt))
+    tTotal_eff          = int(numpy.round(tTotal / dt))
+    n_neigh             = N_fl - 1.0
+    sum_X               = sum(X)
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans_eff):
@@ -476,15 +583,12 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,saveSite
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
 
-    rho           = numpy.zeros(tTotal_eff-tTrans_eff,dtype=numpy.float64)
-    sum_X         = sum(X)
-    rho[0]        = float(sum_X) / N_fl
-    for i in range(N):
-        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    rho                 = numpy.zeros(tTotal_eff-tTrans_eff,dtype=numpy.float64)
+    sum_X               = sum(X)
+    rho[0]              = float(sum_X) / N_fl
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
@@ -493,8 +597,8 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,saveSite
         Xa     = X[i]
         X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        X_data = save_spk_time(X_data, t*dt, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data, t*dt, i, X[i])               # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        X_data = save_spk_time( X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
         if sum_X < 1:
             if M == 0:
                 break
@@ -507,16 +611,12 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,saveSite
 
 @njit
 def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
-    X             = get_IC(X0, fX0, X0Rand, N)
-    neigh         = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
-    is_aval_sim   = sim == SimulationType.AVAL
-    if iterdynamics == StateIterType.TOME_OLIVEIRA:
-        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
-        state_iter  = state_iter_Tome_Oliveira
-    else:
-        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
-        state_iter  = state_iter_Dickman
-    N_fl          = float(N)
+    X                   = get_IC(X0, fX0, X0Rand, N)
+    neigh               = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
+    is_aval_sim         = sim == SimulationType.AVAL
+    state_iter          = get_site_state_iterator(iterdynamics)
+    alpha               = get_site_state_iterator_alpha(iterdynamics,l)
+    N_fl                = float(N)
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans):
@@ -532,14 +632,11 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynami
     
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
     
-    rho           = numpy.zeros(tTotal-tTrans, dtype=numpy.float64)
-    rho[0]        = float(sum(X)) / N_fl
-    for i in range(N):
-        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    rho                 = numpy.zeros(tTotal-tTrans, dtype=numpy.float64)
+    rho[0]              = float(sum(X)) / N_fl
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal-tTrans):
@@ -561,18 +658,14 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynami
 
 @njit
 def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynamics,saveSites,writeOnRun,spkFileName):
-    X          = get_IC(X0,fX0,X0Rand,N)
-    neigh      = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
-    if iterdynamics == StateIterType.TOME_OLIVEIRA:
-        alpha       = 1.0 / l # chance of annihilating if site is occupied, book TOme e Oliveira
-        state_iter  = state_iter_Tome_Oliveira
-    else:
-        alpha       = l / (1.0 + l) # v, book of Marro & Dickman
-        state_iter  = state_iter_Dickman
-    N_fl       = float(N)
-    tTrans_eff = int(numpy.round(tTrans / dt))
-    tTotal_eff = int(numpy.round(tTotal / dt))
-    sum_X      = sum(X)
+    X                   = get_IC(X0,fX0,X0Rand,N)
+    neigh               = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
+    state_iter          = get_site_state_iterator(iterdynamics)
+    alpha               = get_site_state_iterator_alpha(iterdynamics,l)
+    N_fl                = float(N)
+    tTrans_eff          = int(numpy.round(tTrans / dt))
+    tTotal_eff          = int(numpy.round(tTotal / dt))
+    sum_X               = sum(X)
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
     for t in range(1,tTrans_eff):
@@ -589,16 +682,12 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdyna
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = List.empty_list(type_X_data_item) # get_initial_network_state_for_output(X,saveSites and not writeOnRun)
+    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
 
-    rho           = numpy.zeros(tTotal_eff-tTrans_eff, dtype=numpy.float64)
-    sum_X         = sum(X)
-    # saving IC
-    rho[0]        = float(sum_X) / N_fl
-    for i in range(N):
-        X_data = save_spk_time(X_data, 0.0, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data,0.0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    rho                 = numpy.zeros(tTotal_eff-tTrans_eff, dtype=numpy.float64)
+    sum_X               = sum(X)
+    rho[0]              = float(sum_X) / N_fl
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
@@ -607,10 +696,10 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdyna
         Xa     = X[i]
         X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
         sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        X_data = save_spk_time(X_data, t*dt, i, X[i])  # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data, t*dt, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        X_data = save_spk_time( X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _      = write_spk_time(X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
         #sum_of_X = sum(X)
-        if sum_X < 1.0:
+        if sum_X < 1:
             if M == 0:
                 break
             X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))

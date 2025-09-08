@@ -27,10 +27,11 @@ def main():
     args              = io.namespace_to_structtype(parser.parse_args())
     args.sim          = cp.str_to_SimulationType(args.sim)
     args.graph        = cp.str_to_GraphType(args.graph)
+    args.update       = cp.str_to_UpdateType(args.update)
     args.iterdynamics = cp.str_to_StateIterType(args.iterdynamics)
     args.docstring    = io.get_help_string(parser)
     args.X0Rand       = not args.noX0Rand
-    args.expandtime   = not cp.is_parallel_update(args.update)
+    #args.expandtime   = not cp.is_parallel_update(args.update)
     args.dt           = cp.Get_Simulation_Timescale(args)
     args.outputFile   = io.get_new_file_name(io.get_output_filename(args.outputFile))
     args.spkFileName  = args.outputFile.replace('.mat','_spk.txt') if args.writeOnRun else ''
@@ -55,7 +56,8 @@ def main():
         if args.writeOnRun and args.saveSites:
             print('  ... writing file ',args.spkFileName,' during simulation')
         with contextlib.redirect_stdout(spk_file):
-            rho, X_data     = simulation_func(**io.keep_keys(dict(**args),io.get_func_param(simulation_func)))
+            sim_params_dict = io.keep_keys(dict(**args),io.get_func_param(simulation_func))
+            rho, X_data     = simulation_func(**sim_params_dict)
     
     ##### FOR DEBUG ... disable redirection of stdout
     #rho, X_data     = simulation_func(**io.keep_keys(dict(**args),io.get_func_param(simulation_func)))

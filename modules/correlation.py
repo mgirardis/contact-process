@@ -493,7 +493,7 @@ def rand_corr_matrix(A, i=None, j=None):
     A[i,j] = x
     return numpy.triu(A,k=1) + numpy.tril(numpy.transpose(A))
 
-def get_binary_spike_series(S,spk_threshold=59.0):
+def get_binary_spike_series(S,spk_threshold=0.0):
     return numpy.asarray(S>spk_threshold,dtype=float)
 
 def smooth_spikes(S, smooth:SmoothingType=None, dt=0.01, stddev=0.1, J=None, kernel_size=10):
@@ -567,30 +567,156 @@ def get_gaussian_kernel(sigma,dt=0.01):
     G = scipy.stats.norm.pdf(t,scale=sigma) * dt
     return G / numpy.sum(G)
 
+@njit
+def _append(arr, val):
+    """Numba-safe version of numpy.append for 1D arrays."""
+    n       = arr.size
+    out     = numpy.empty(n + 1, arr.dtype)
+    out[:n] = arr
+    out[n]  = val
+    return out
 
 @njit
-def _spike_times_to_spiketrain_numba(t, n, X, T, N, use_X):
-    S = numpy.zeros((T+1, N), dtype=numpy.float64)
-    for i in range(t.shape[0]):
-        time = t[i]
-        neuron = n[i]
-        S[time, neuron] = X[i] if use_X else 1.0
+def _insert(arr, idx, val):
+    """Numba-safe version of numpy.insert for 1D arrays."""
+    n           = arr.size
+    out         = numpy.empty(n + 1, arr.dtype)
+    out[:idx]   = arr[:idx] # copy up to insertion point
+    out[idx]    = val # insert value
+    out[idx+1:] = arr[idx:] # copy rest
+    return out
+
+@njit
+def _convert_activation_deactivation_to_state(S):
+    """
+    converts the events in S[n,t] into a state matrix M[n,t]
+    where S[n,t] = +1 or -1 (activation or deactivation event)
+    and M[n,t] = 1 or 0 (active or inactive state)
+    S -> matrix of activation (+1) and deactivation (-1) events
+    returns
+        M -> state matrix M[n,t] = 1=active or 0=inactive
+    """
+    a = numpy.where(S > 0)[0] # activation
+    b = numpy.where(S < 0)[0] # deactivation
+    has_elem_a = a.size>0
+    has_elem_b = b.size>0
+    has_elem   = has_elem_a and has_elem_b
+    if (has_elem_b and not has_elem_a) or (has_elem and (b[0] < a[0])): # if the first event is a deactivation
+        a = _insert(a,0,0) # we assume the site was active at t=0
+    if (has_elem_a and not has_elem_b) or (has_elem and (a[-1] > b[-1])): # if the last event is an activation
+        b = _append(b,S.size-1) # we assume the site was active until the end
+    for t1,t2 in zip(a,b):
+        S[t1:(t2+1)] = 1 # extending the activation until the next deactivation
     return S
 
-def spike_times_to_spiketrain(t, n, X=None, T=None, N=None):
+@njit
+def _spike_times_to_spiketrain_numba(t, n, X, T, N, use_X, convert_act_deact_events_to_site_state=False, use_cumsum=True):
+    """
+    Convert spike time and neuron index arrays into a spiketrain matrix using Numba for performance.
+
+    Parameters:
+    - t (ndarray of int32): Array of spike times.
+    - n (ndarray of int32): Array of neuron indices corresponding to each spike time.
+    - X (ndarray of float64): Array of spike magnitudes or weights.
+    - T (int): Maximum time index (defines number of time steps).
+    - N (int): Number of neurons.
+    - use_X (bool): If True, use values from X; otherwise, use 1.0 for each spike.
+
+    Returns:
+    - S (ndarray of shape (N, T+1)): A 2D spiketrain matrix where each entry S[n, t] represents
+      the spike value (either from X or 1.0) for neuron `n` at time `t`.
+    """
+    S = numpy.zeros((N,T+1), dtype=numpy.int32)
+    for i in range(t.size):
+        time   = t[i]
+        neuron = n[i]
+        S[neuron,time] += X[i] if use_X else 1
+    if convert_act_deact_events_to_site_state:
+        for i in range(N):
+            if use_cumsum:
+                S[i,:] = numpy.cumsum(S[i,:])
+            else:
+                S[i,:] = _convert_activation_deactivation_to_state(S[i,:])
+    return S
+
+def _is_integer(num):
+    return isinstance(num, int) or (isinstance(num, float) and num.is_integer())
+
+def spike_times_to_spiketrain(t, n, X=None, T=None, N=None, convert_act_deact_events_to_site_state=False, use_cumsum=True):
+    """
+    Generate a spiketrain matrix from spike times and neuron indices, optionally using spike values.
+
+    Parameters:
+    - t (array-like): Spike times (integers).
+    - n (array-like): Neuron indices corresponding to each spike time.
+    - X (array-like, optional): Spike values or magnitudes. If None, all spikes are treated as 1.0.
+    - T (int, optional): Maximum time index. If None, inferred from max(t).
+    - N (int, optional): Number of neurons. If None, inferred from max(n).
+
+    Returns:
+    - S (ndarray of shape (T+1, N)): A 2D spiketrain matrix where each entry S[t, n] represents
+      the spike value (either from X or 1.0) for neuron `n` at time `t`.
+
+    Notes:
+    - This function handles input validation and preprocessing before delegating to a Numba-accelerated
+      implementation for performance.
+    - If `X` is provided, it must have the same shape as `t`.
+    """
+    if not all(_is_integer(tt) for tt in t):
+        print(' ::: WARNING ::: Converting spike times to integers... If this is not desired, please convert them before calling, e.g., using t/dt')
     t = numpy.asarray(t, dtype=numpy.int32)
     n = numpy.asarray(n, dtype=numpy.int32)
     T = int(T) if T is not None else int(numpy.max(t))
     N = int(N) if N is not None else int(numpy.max(n))
     if _exists(X):
-        X = numpy.asarray(X, dtype=numpy.float64)
+        X = numpy.asarray(X, dtype=numpy.int32)
         assert X.shape == t.shape, 'X must match shape of t'
         use_X = True
     else:
-        X = numpy.zeros_like(t, dtype=numpy.float64)
+        X = numpy.ones_like(t, dtype=numpy.float64)
         use_X = False
-    return _spike_times_to_spiketrain_numba(t, n, X, T, N, use_X)
+    return _spike_times_to_spiketrain_numba(t, n, X, T, N, use_X, convert_act_deact_events_to_site_state)
 
+def calc_firing_rate_from_spiketrain(S,is_sequential_update=True):
+    """
+    converts spike trains (or event matrix) into a firing rate
+    S[n,t]               -> spike train (or event matrix in the case of sequential updates)
+                            of site n at time t
+    is_sequential_update -> if True, assumes S[n,t] contains both activations (+1) and deactivations (-1);
+                            if False, assumes S[n,t] contains spike events only
+    returns
+        rho[t] -> firing rate at time t
+    """
+    sum_events = S.sum(axis=0)
+    if is_sequential_update:
+        sum_events = numpy.cumsum(sum_events)
+    return sum_events/S.shape[0]
+
+def calc_firing_rate_from_spike_times(time,N,X_time,X_values=None,is_sequential_update=True):
+    """
+    converts spikes (or events) times into a firing rate
+    time                 -> vector of time points
+    N                    -> number of sites (or neurons)
+    X_time               -> vector of time points when events occur (either activation of deactivation if sequential updates)
+    X_values             -> vector of values of events
+                                1 for activation, -1 for deactivation (if sequential updates is True);
+                                only 1 for all spike events (if not sequential updates)
+    is_sequential_update -> if True, assumes X_values contains both activations (+1) and deactivations (-1);
+                            if False, assumes X_values contains spike events only at each time point
+    returns
+        rho[t] -> firing rate at time t
+    """
+    if not _exists(X_values):
+        print(' ::: WARNING ::: Assuming X_values=1 and not sequential updates...')
+        X_values             = numpy.ones_like(X_time,dtype=int)
+        is_sequential_update = False
+    S0 = numpy.nonzero(X_time==time[0])[0].size
+    S  = numpy.array([ (X[0] if ((X:=X_values[X_time==t]).size) else 0) for t in time[1:] ])
+    if is_sequential_update:
+        S = (numpy.cumsum(S)+S0)
+    else:
+        S = numpy.insert(S,0,S0)
+    return S/N
 
 #def spike_times_to_spiketrain(t,n,X=None,T=None,N=None):
 #    t = (t if _is_numpy_array(t) else numpy.asarray(t)).astype(int)
