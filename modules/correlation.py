@@ -2,10 +2,9 @@ import math
 import numpy
 import scipy.stats
 import scipy.signal
+import modules.misc_func as misc
 from numba import njit
-from numba.typed import List
 from enum import IntEnum
-from modules.io import structtype
 
 class SmoothingType(IntEnum):
     NONE       = 0
@@ -18,6 +17,7 @@ class FilterType(IntEnum):
     MEDIAN     = 1
     LOWPASS    = 2
     MOVING_AVG = 3
+    WIENER     = 4
 
 class PositionType(IntEnum):
     RING      = 0
@@ -174,15 +174,12 @@ def generate_Poisson_spikes(r, T, N):
         X[numpy.random.rand(T)<P,k] = 1.0
     return X
 
-def get_empty_list(N):
-    return [ None for _ in range(N)]
-
 def get_n_max_corrcoef(C,n=10,i=None,j=None):
     if type(C) is list:
         i,j = numpy.nonzero(numpy.tril(numpy.ones(C[0].shape)))
-        ncf = get_empty_list(len(C))
-        ind = get_empty_list(len(C))
-        linind = get_empty_list(len(C))
+        ncf = misc.get_empty_list(len(C))
+        ind = misc.get_empty_list(len(C))
+        linind = misc.get_empty_list(len(C))
         for k,c in enumerate(C):
             ncf[k],ind[k],linind[k] = get_n_max_corrcoef(c,n,i=i,j=j)
     else:
@@ -208,10 +205,10 @@ def calc_correlation_distribution(C,nbins=100,smooth=False,ignoreZeroCorr=True):
         smooth = 'average'
     if type(C) is list:
         n = len(C)
-        P = get_empty_list(n)
-        bins = get_empty_list(n)
-        avg = get_empty_list(n)
-        std = get_empty_list(n)
+        P = misc.get_empty_list(n)
+        bins = misc.get_empty_list(n)
+        avg = misc.get_empty_list(n)
+        std = misc.get_empty_list(n)
         for i,c in enumerate(C):
             P[i],bins[i],avg[i],std[i] = calc_correlation_distribution(c,nbins=nbins,smooth=smooth,ignoreZeroCorr=ignoreZeroCorr)
         return P, bins, avg, std
@@ -298,7 +295,7 @@ def calc_dispersion_PCA(C):
     - The function takes the absolute value of eigenvalues before computing the square root to ensure real-valued dispersions.
     """
     if type(C) is list:
-        return _unpack_list_of_tuples([ _calc_dispersion_PCA_numba(c) for c in C ])
+        return misc.unpack_list_of_tuples([ _calc_dispersion_PCA_numba(c) for c in C ])
     return _calc_dispersion_PCA_numba(C)
 
 @njit
@@ -313,9 +310,10 @@ def _calc_dispersion_PCA_numba(C):
     return lambda_eig,lambda_dispersion,eigenvectors,V_matrix
 
 def calc_correlation_matrices(S,DeltaT=None,overlap_DeltaT=False,
-    smooth : SmoothingType = False, smooth_stddev=0.1,smooth_J=None,smooth_mvavg_kernel_size=10,
+    smooth : SmoothingType = False,smooth_args=None,
     binarize=True,spk_threshold=59.0,
-    rowvar=False,nandiag=True,filterSpkFreq:FilterType=False,filter_kernel_size=3,filter_null_avg_ntrials=10):
+    rowvar=False,nandiag=True,
+    filterSpkFreq:FilterType=False,filter_args=None):
     """
     Computes a sequence of correlation (covariance) matrices from a spike time series matrix `S`.
     If DeltaT is given, the time series is divided into a sequence of (possibly overlapping) intervals of length 'DeltaT'.
@@ -336,10 +334,10 @@ def calc_correlation_matrices(S,DeltaT=None,overlap_DeltaT=False,
 
     smooth : SmoothingType, optional
         Whether to apply smoothing to the spike data. See 'SmoothingType' for options.
-    smooth_stddev : float, optional
-        Standard deviation used for Gaussian smoothing. Ignored if `smooth` is False or 'mexican'.
-    smooth_J : any, optional
-        Additional parameter passed to the smoothing function. Typically used for 'mexican' smoothing.
+    smooth_args : dict, optional
+        dt=0.01, stddev=0.1, J=None, kernel_size=10
+        stddev -> Standard deviation used for Gaussian smoothing. Ignored if `smooth` is False or 'mexican'.
+        J      -> Additional parameter passed to the smoothing function. Typically used for 'mexican' smoothing.
 
     binarize : bool, optional
         If True, converts the spike data to binary format using a threshold.
@@ -354,10 +352,7 @@ def calc_correlation_matrices(S,DeltaT=None,overlap_DeltaT=False,
 
     filterSpkFreq : FilterType, optional
         Whether to apply filtering to the spike series before computing correlations. See FilterType for options.
-    filter_kernel_size : int, optional
-        Size of the kernel (number of time steps) used for filtering spike frequencies by median. Default is 3.
-    filter_null_avg_ntrials : int, optional
-        Number of trials used to average randomized correlation matrices. Default is 10.
+        kernel_size=3,fs=10.0,cutoff=1.0,order=5,noise=None
 
     Returns:
     -------
@@ -379,9 +374,9 @@ def calc_correlation_matrices(S,DeltaT=None,overlap_DeltaT=False,
     if binarize:
         S = get_binary_spike_series(S,spk_threshold=spk_threshold)
     if smooth:
-        S = smooth_spikes(S,smooth=smooth,stddev=smooth_stddev,J=smooth_J,kernel_size=smooth_mvavg_kernel_size)
+        S = smooth_spikes(S,smooth=smooth,**misc._get_kwargs(smooth_args))
     if filterSpkFreq:
-        S = filter_spikes(S,kernel_size=filter_kernel_size,nullavg_ntrials=filter_null_avg_ntrials)
+        S = filter_spikes(S,**misc._get_kwargs(filter_args))
     if overlap_DeltaT:
         nT             = S.shape[0] - 1
         get_time_range = _get_corr_timerange_overlap
@@ -389,8 +384,8 @@ def calc_correlation_matrices(S,DeltaT=None,overlap_DeltaT=False,
         nT             = int(numpy.ceil(float(S.shape[0]) / float(DeltaT)))
         get_time_range = _get_corr_timerange_adjacent
     
-    C      = get_empty_list(nT)
-    tRange = get_empty_list(nT)
+    C      = misc.get_empty_list(nT)
+    tRange = misc.get_empty_list(nT)
     for n in range(nT):
         t1,t2 = get_time_range(n,DeltaT)
         if t2 > S.shape[0]:
@@ -412,7 +407,7 @@ def calc_correlation_matrices(S,DeltaT=None,overlap_DeltaT=False,
         tRange = [t for t in tRange if t is not None] 
     return C, tRange
 
-def filter_spikes(S,filter_type:FilterType=None,kernel_size=3,fs=10.0,cutoff=1.0,order=5):
+def filter_spikes(S,filter_type:FilterType=None,kernel_size=3,fs=10.0,cutoff=1.0,order=5,noise=None):
     if filter_type == FilterType.NONE or filter_type is False:
         return S
     if filter_type == FilterType.MEDIAN:
@@ -421,6 +416,8 @@ def filter_spikes(S,filter_type:FilterType=None,kernel_size=3,fs=10.0,cutoff=1.0
         return filter_butter_lowpass(S, cutoff, fs, order)
     elif filter_type == FilterType.MOVING_AVG:
         return numpy.apply_along_axis(moving_average, 0, S, n=kernel_size)
+    elif filter_type == FilterType.WIENER:
+        return numpy.apply_along_axis(scipy.signal.wiener, 0, S, mysize=kernel_size, noise=noise)
     else:
         raise ValueError(f"Unknown filter type: {filter_type}. Supported types are given by FilterType enum.")
 
@@ -431,7 +428,7 @@ def filter_butter_lowpass(S, cutoff, fs, order=5):
     b, a = _filter_create_butter_lowpass(cutoff, fs, order=order)
     n    = S.shape[1]
     for i in range(n):
-        S[:,i] = scipy.signal.lfilter(b, a, S[:,i])
+        S[:,i] = scipy.signal.filtfilt(b, a, S[:,i])
     return S
 
 def filter_spk_freq_median(S,kernel_size=3):
@@ -668,7 +665,7 @@ def spike_times_to_spiketrain(t, n, X=None, T=None, N=None, convert_act_deact_ev
     n = numpy.asarray(n, dtype=numpy.int32)
     T = int(T) if T is not None else int(numpy.max(t))
     N = int(N) if N is not None else int(numpy.max(n))
-    if _exists(X):
+    if misc.exists(X):
         X = numpy.asarray(X, dtype=numpy.int32)
         assert X.shape == t.shape, 'X must match shape of t'
         use_X = True
@@ -706,7 +703,7 @@ def calc_firing_rate_from_spike_times(time,N,X_time,X_values=None,is_sequential_
     returns
         rho[t] -> firing rate at time t
     """
-    if not _exists(X_values):
+    if not misc.exists(X_values):
         print(' ::: WARNING ::: Assuming X_values=1 and not sequential updates...')
         X_values             = numpy.ones_like(X_time,dtype=int)
         is_sequential_update = False
@@ -721,23 +718,23 @@ def calc_firing_rate_from_spike_times(time,N,X_time,X_values=None,is_sequential_
 #def spike_times_to_spiketrain(t,n,X=None,T=None,N=None):
 #    t = (t if _is_numpy_array(t) else numpy.asarray(t)).astype(int)
 #    n = (n if _is_numpy_array(n) else numpy.asarray(n)).astype(int)
-#    T = int(T if _exists(T) else numpy.max(t))
-#    N = int(N if _exists(N) else numpy.max(n))
-#    if _exists(X):
+#    T = int(T if misc.exists(T) else numpy.max(t))
+#    N = int(N if misc.exists(N) else numpy.max(n))
+#    if misc.exists(X):
 #        X = X if _is_numpy_array(X) else numpy.asarray(X)
 #        assert X.shape == t.shape, 'The input X must be the state of each node n at time t, so it must match the type and shape of t.'
-#    _type = X.dtype if _exists(X) else float
+#    _type = X.dtype if misc.exists(X) else float
 #    S     = numpy.zeros((T+1,N),dtype=_type)
 #    for i in range(N):
 #        ind         = numpy.nonzero(n == i)[0]
-#        S[t[ind],i] = X[ind] if _exists(X) else 1.0
+#        S[t[ind],i] = X[ind] if misc.exists(X) else 1.0
 #    return S
 
 def membpotential_to_spiketrain(V_data,t=None,spk_threshold=59.0):
     # converts each column of data into a numpy binary array of spike trains
     # t is the time vector
     (T,N) = V_data.shape
-    spktrains = get_empty_list(N)
+    spktrains = misc.get_empty_list(N)
     if t is None:
         t = numpy.arange(T)
     #dt = numpy.mean(numpy.squeeze(numpy.diff(t)))
@@ -750,104 +747,9 @@ def membpotential_to_spike_times(V_data,t=None,spk_threshold=59.0):
     # converts each column of data into an array of spike times
     # t is the time vector
     (T,N) = V_data.shape
-    spktimes = get_empty_list(N)
+    spktimes = misc.get_empty_list(N)
     if t is None:
         t = numpy.arange(T)
     for j in range(N):
         spktimes[j] = t[numpy.nonzero(V_data[:,j] > spk_threshold)]
     return spktimes
-
-def _get_unique_pair_indices(k):
-    if not (type(k) is list):
-        _,a = numpy.unique(k, axis=0, return_inverse=True)
-        return k
-    n = len(k)
-    a = numpy.array(k).flatten()
-    _,a = numpy.unique(a, axis=0, return_inverse=True)
-    return _split_array(a,n)
-
-def _split_array(a, n):
-    k, m = divmod(len(a), n)
-    return numpy.array([ a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n) ])
-
-def _flatten_tuple_list(l):
-    r = []
-    for e in l:
-        if type(e) is list:
-            r += _flatten_tuple_list(e)
-        else:
-            r.append(e)
-    return r
-
-def _sort_tuple_list(l,k):
-    return [ l[i] for i in k ]
-
-def _unpack_list_of_tuples(lst):
-    """
-    given a list of len m where element is an n-tuple, then returns an n-tuple where each element containins m elements
-    (similar to numpy.transpose)
-
-    this is useful to unpack a list comprehension applied to a function that has multiple returns
-    """
-    return tuple( list(x) for x in zip(*lst) )
-
-def _exists(X):
-    return not(type(X) is type(None))
-
-def _is_numpy_array(X):
-    return isinstance(X,numpy.ndarray)
-
-def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, mask=None):
-    """
-    Performs linear regression on transformed data using scipy.stats.linregress.
-
-    Parameters:
-    ----------
-    x_data : array-like
-        Original independent variable values.
-    y_data : array-like
-        Original dependent variable values.
-    x_transform : callable
-        Function to transform x_data for linearization.
-    y_transform : callable
-        Function to transform y_data for linearization.
-    inverse_transform : callable
-        Function to reverse the y_transform for plotting fitted curve in original space.
-    mask : numpy-compatible index [e.g., range, int, logical, etc]
-        if present, only performs fit on the masked data: x_data[mask], y_data[mask]
-
-    Returns:
-    -------
-    coeffs : tuple
-        (slope, intercept) of the linear fit in transformed space.
-    r_squared : float
-        Coefficient of determination (R²).
-    residual_sum_squares : float
-        Residual sum of squares in original space.
-    x_fit : ndarray
-        Dense x values for plotting the fitted curve.
-    y_fit : ndarray
-        Fitted y values in original space.
-    """
-    # Transform the data
-    if _exists(mask):
-        x_lin = x_transform(x_data[mask])
-        y_lin = y_transform(y_data[mask])
-    else:
-        x_lin = x_transform(x_data)
-        y_lin = y_transform(y_data)
-
-    # Perform linear regression
-    slope, intercept, r_value, _, _ = scipy.stats.linregress(x_lin, y_lin)
-
-    # Generate fitted values in original space
-    x_fit = numpy.linspace(min(x_data), max(x_data), 100)
-    func  = lambda x,*fitpar: inverse_transform(fitpar[0] * x_transform(x) + fitpar[1])
-    y_fit = func(x_fit,slope,intercept)
-
-    # Compute residuals and RSS in original space
-    y_pred    = inverse_transform(slope * x_lin + intercept)
-    residuals = (y_data[mask] if _exists(mask) else y_data) - y_pred
-    rss       = numpy.sum(residuals**2)
-
-    return structtype(func=func,fitpar=(slope, intercept),R2=r_value**2,res_sum_sqr=rss,x_fit=x_fit,y_fit=y_fit)

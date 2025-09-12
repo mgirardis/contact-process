@@ -5,7 +5,7 @@ import copy
 import numpy
 import scipy.io
 import contextlib
-import collections
+import modules.misc_func as misc
 
 def add_simulation_parameters(parser):
     parser.add_argument('-l',            nargs=1, required=False, metavar='l_PARAM',      type=float, default=[1.1],   help='CP rate (l_c=3.297848 for ring, iterdynamics=md; l_c=2 for ring, iterdynamics=to; l_c=1 for mean-field)')
@@ -35,8 +35,11 @@ def get_help_string(parser):
         parser.print_help()
     return help_buffer.getvalue()
 
-def import_mat_file(path):
-    return structtype(**{ k:v for k,v in scipy.io.loadmat(path, squeeze_me=True).items() if ((not k.startswith('__')) and (not k.endswith('__'))) })
+def import_mat_file(path,variable_names=None,return_structtype=True):
+    d = scipy.io.loadmat(path, squeeze_me=True, variable_names=variable_names)
+    if not return_structtype:
+        return d
+    return misc.structtype(**{ k:v for k,v in d.items() if ((not k.startswith('__')) and (not k.endswith('__'))) })
 
 def import_spk_file(fname):
     if not os.path.isfile(fname):
@@ -161,17 +164,24 @@ def fill_with_nan(s):
 
 def structtype_to_recarray(s):
     if isinstance(s,list) or isinstance(s,tuple):
-        s_new = structtype(struct_fields=list(s[0].keys()),field_values=[ None for _ in s[0].keys() ])
+        s_new = misc.structtype(struct_fields=list(s[0].keys()),field_values=[ None for _ in s[0].keys() ])
         for k in s[0].keys():
             s_new[k] = list_of_arr_to_arr_of_obj([ v[k] for v in s ])
         return struct_array_for_scipy(s_new.GetFields(','),*s_new.values())
     return struct_array_for_scipy(s.GetFields(','),*[list_of_arr_to_arr_of_obj([v]) for v in s.values()])
 
-def recarray_to_structtype(r):
+def recarray_to_structtype(r,convert_to_structarray=True):
     unpack_array = lambda a: a if numpy.isscalar(a) else (a.item(0) if a.size==1 else a)
-    s = structtype(**{ field : unpack_array(r[field]) for field in r.dtype.names })
-    if len(r) > 1:
-        return convert_struct_of_arrays_to_structarray(s)
+    s = misc.structtype(**{ field : unpack_array(r[field]) for field in r.dtype.names })
+    if convert_to_structarray:
+        try:
+            if len(r) > 1:
+                return convert_struct_of_arrays_to_structarray(s)
+        except TypeError as e:
+            if 'len() of unsized object' in str(e):
+                print(' ::: WARNING ::: Cannot convert to structarray... Check len(r)')
+            else:
+                raise e
     return s
 
 def convert_struct_of_arrays_to_structarray(s):
@@ -180,7 +190,7 @@ def convert_struct_of_arrays_to_structarray(s):
     if not all(len(s[f]) == N for f in fields):
         raise ValueError('all fields in s must have the same length')
     if N > 1:
-        s_structarray = [ structtype(**{k:None for k in s.keys()}) for _ in range(N) ]
+        s_structarray = [ misc.structtype(**{k:None for k in s.keys()}) for _ in range(N) ]
         for i in range(N):
             for k in s.keys():
                 s_structarray[i][k] = s[k][i]
@@ -217,94 +227,7 @@ def list_of_arr_to_arr_of_obj(X):
 
 
 def namespace_to_structtype(a):
-    return structtype(**fix_args_lists_as_scalars(copy.deepcopy(a.__dict__)))
-
-class structtype(collections.abc.MutableMapping):
-    def __init__(self,struct_fields=None,field_values=None,**kwargs):
-        if not(type(struct_fields) is type(None)):
-            #assert not(type(values) is type(None)),"if you provide field names, you must provide field values"
-            if not self._is_iterable(struct_fields):
-                struct_fields = [struct_fields]
-                field_values  = [field_values]
-            kwargs.update({f:v for f,v in zip(struct_fields,field_values)})
-        self.Set(**kwargs)
-    def Set(self,**kwargs):
-        self.__dict__.update(kwargs)
-        return self
-    def SetAttr(self,field,value):
-        if not self._is_iterable(field):
-            field = [field]
-            value = [value]
-        self.__dict__.update({f:v for f,v in zip(field,value)})
-        return self
-    def GetFields(self,sep='; '):
-        return sep.join([ k for k in self.__dict__.keys() if (k[0:2] != '__') and (k[-2:] != '__') ])
-        #return self.__dict__.keys()
-    def IsField(self,field):
-        return field in self.__dict__.keys()
-    def RemoveField(self,field):
-        return self.__dict__.pop(field,None)
-    def RemoveFields(self,*fields):
-        r = []
-        for k in fields:
-            r.append(self.__dict__.pop(k,None))
-        return r
-    def KeepFields(self,*fields):
-        keys = list(self.__dict__.keys())
-        for k in keys:
-            if not (k in fields):
-                self.__dict__.pop(k,None)
-    def keys(self):
-        return self.__dict__.keys()
-    def items(self):
-        return self.__dict__.items()
-    def values(self):
-        return self.__dict__.values()
-    def pop(self,key,default_value=None):
-        if type(key) is str:
-            return self.__dict__.pop(key,default_value)
-        elif isinstance(key,collections.abc.Iterable):
-            r = []
-            for k in key:
-                r.append(self.__dict__.pop(k,default_value))
-            return r
-        else:
-            raise ValueError('key must be a string or a list of strings')
-    def __setitem__(self,label,value):
-        self.__dict__[label] = value
-    def __getitem__(self,label):
-        return self.__dict__[label]
-    def __repr__(self):
-        char_lim      = 50
-        char_arg_name = 20
-        get_repr      = lambda r: r[:char_lim]+'...' if len(r) > char_lim else r
-        type_name     = type(self).__name__
-        arg_strings   = []
-        star_args     = {}
-        for arg in self._get_args():
-            arg_strings.append(repr(arg))
-        for name, value in self._get_kwargs():
-            if name.isidentifier():
-                arg_name     = (name[:(char_arg_name-3)] + '...') if len(name) > char_arg_name else name.rjust(char_arg_name)
-                arg_strings.append('%s: %s' % (arg_name, get_repr(repr(value)).replace('\n','').strip()  ))
-            else:
-                star_args[name] = get_repr(repr(value))
-        if star_args:
-            arg_strings.append('**%s' % star_args)
-        sep = '\n' #if len(arg_strings) > 3 else '; '
-        return '%s(\n%s\n)' % (type_name, sep.join(arg_strings))
-    def _get_kwargs(self):
-        return sorted(self.__dict__.items())
-    def _get_args(self):
-        return []
-    def _is_iterable(self,obj):
-        return (type(obj) is list) or (type(obj) is tuple)
-    def __delitem__(self,*args):
-        self.__dict__.__delitem__(*args)
-    def __len__(self):
-        return self.__dict__.__len__()
-    def __iter__(self):
-        return iter(self.__dict__)
+    return misc.structtype(**fix_args_lists_as_scalars(copy.deepcopy(a.__dict__)))
 
 #def get_write_spike_data_functions(saveSites,writeOnRun):
 #    if saveSites:

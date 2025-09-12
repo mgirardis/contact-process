@@ -15,18 +15,15 @@ def cmap_blue_deep():
     cmap = LinearSegmentedColormap.from_list("blue_deep", key_colors)
     return cmap
 
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-
 def cmap_red_standard():
     # Define the key colors (normalized RGB)
-    key_colors = [
+    key_colors = numpy.array([
         [255, 204, 204],  # Light Pink
         [255, 153, 153],  # Pink
         [255, 102, 102],  # Salmon
         [255, 51, 51],    # Bright Red
         [255, 0, 0],      # Red
-    ]
+    ],dtype=float)/255.0
     # Create the colormap
-    cmap = LinearSegmentedColormap.from_list("red_standard", numpy.array(key_colors,dtype=float) / 255.0)
+    cmap = LinearSegmentedColormap.from_list("red_standard", key_colors)
     return cmap
