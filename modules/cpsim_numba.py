@@ -205,7 +205,7 @@ def dump_spike_data_sequential_update(do_dump_data,save_spk_time_func,write_spk_
         _       = write_spk_time_func(X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
     return X_data
 
-@njit
+@njit(types.none(types.string,types.boolean,types.boolean))
 def open_file(spkFileName,saveSites_and_writeOnRun,save_site_state_change):
     if saveSites_and_writeOnRun:
         #spk_file = open(spkFileName,'w')
@@ -229,7 +229,7 @@ def open_file(spkFileName,saveSites_and_writeOnRun,save_site_state_change):
         print(header_txt)
     return None
 
-@njit
+@njit(types.void(types.none,types.string,types.boolean))
 def close_file(spkFile,spkFileName,saveSites_and_writeOnRun):
     if saveSites_and_writeOnRun:
         print('')
@@ -523,7 +523,7 @@ def CyclicStack_GetRandom(stack, count):
 #    #stack, maxsize, count = cyclic_stack_data
 #    return count
 
-@njit
+@njit(types.Tuple((types.boolean, types.int64[:], types.int64))(types.int64[:], types.boolean, types.int64, types.float64[:], types.int64, types.int64))
 def check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count):
     # returns True if activity must continue
     #         False if activity should die out
@@ -601,7 +601,9 @@ def Run_transient_parallel(state_iter,tTrans,alpha,X,M,fX0,is_aval_sim,is_meanfi
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho_prev) 
     return X,sum_X,rho_memory,cs_count
 
-@njit
+type_simulation_result  = types.Tuple((types.float64[:],types.float64[:],type_X_data))
+type_mfsimulation_input = (types.int64,types.int64,types.float64,types.boolean,types.float64,types.int64,types.int64,types.float64,types.int64,types.int64,types.int64,types.int64,types.boolean,types.boolean,types.string)
+@njit(type_simulation_result(*type_mfsimulation_input))
 def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     # all sites update in the same time step -- matches the GL model
     X                   = get_IC(X0, fX0, X0Rand, N)     
@@ -639,7 +641,7 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics,s
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
     return rho, numpy.arange(rho.size,dtype=numpy.float64), X_data
 
-@njit
+@njit(type_simulation_result(*type_mfsimulation_input))
 def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     # only 1 site is attempted update at each time step
     X                   = get_IC(X0, fX0, X0Rand, N)
@@ -686,7 +688,8 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
     return rho[numpy.logical_not(numpy.isnan(rho))], time[numpy.logical_not(numpy.isnan(rho))], X_data
 
-@njit
+type_netsimulation_input = (types.int64,types.int64,types.float64,types.boolean,types.float64,types.int64,types.int64,types.float64,types.int64,types.int64,types.int64,types.int64 ,types.int64,types.boolean,types.boolean,types.string)
+@njit(type_simulation_result(*type_netsimulation_input))
 def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     X                   = get_IC(X0, fX0, X0Rand, N)
     neigh               = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
@@ -723,7 +726,7 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph,i
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
     return rho, numpy.arange(rho.size,dtype=numpy.float64), X_data
 
-@njit
+@njit(type_simulation_result(*type_netsimulation_input))
 def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     X                   = get_IC(X0,fX0,X0Rand,N)
     neigh               = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
