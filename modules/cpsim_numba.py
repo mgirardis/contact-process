@@ -58,15 +58,15 @@ def str_to_StateIterType(itype_str):
     else:
         raise ValueError(f'Unknown state iterator type: {itype_str}')
 
-def is_parallel_update(update):
+def is_parallel_update(update:UpdateType):
     return update == UpdateType.PARALLEL
 
 def Get_Simulation_Func(args):
-    if args.sim == SimulationType.AVAL:
-        if not is_parallel_update(args.update):
-            args.update     = UpdateType.PARALLEL # forcing parallel update for avalanche
-            args.expandtime = False
-            print(' ::: WARNING ::: forcing parallel update and no expandtime because sim == %s'%args.sim)
+    #if args.sim == SimulationType.AVAL:
+    #    if not is_parallel_update(args.update):
+    #        args.update     = UpdateType.PARALLEL # forcing parallel update for avalanche
+    #        args.expandtime = False
+    #        print(' ::: WARNING ::: forcing parallel update and no expandtime because sim == %s'%args.sim)
     if args.graph == GraphType.ALLTOALL:
         if is_parallel_update(args.update):
             return Run_MF_parallel
@@ -79,13 +79,13 @@ def Get_Simulation_Func(args):
             return Run_RingGraph_sequential
 
 def Get_Simulation_Timescale(args):
-    if is_parallel_update(args.update):
-        return 1.0
+    dt = 1.0
+    if args.expandtime and (not is_parallel_update(args.update)):
+        dt = 1.0 / float(args.N) # this time scale is suggested in Dickman and Marro book; Henkel normalizes the time scale by total rate too -- pg 87 pdf, paragraph after eq. 3.35 book Henkel
     else:
         if args.expandtime:
-            return 1.0 / float(args.N) # this time scale is suggested in Dickman and Marro book; Henkel normalizes the time scale by total rate too -- pg 87 pdf, paragraph after eq. 3.35 book Henkel
-        else:
-            return 1.0
+            print(' ::: WARNING ::: ignoring expandtime')
+    return dt
 
 
 #@njit
@@ -161,10 +161,16 @@ def write_spk_data(X_data,t,k,X):
         print(t,',',k,',',X)
     return X_data
 
+@njit(type_X_data(type_X_data,types.float64,types.int64,types.int64))
+def write_spk_data_debug(X_data,t,k,X):
+    if X:
+        #spkFile.write(str(t) + ',' + str(k) + ',' + str(X) + '\n')
+        print(t,',',k,',',X,'#debug')
+    return X_data
 
-type_write_spk_data = typeof(write_spk_data)
-type_save_spk_data  = typeof(save_spk_data)
-@njit(types.Tuple((type_write_spk_data, type_save_spk_data))(types.boolean, types.boolean))
+
+type_writesave_spk_data = types.FunctionType(type_X_data(type_X_data,types.float64,types.int64,types.int64))
+@njit(types.Tuple((type_writesave_spk_data, type_writesave_spk_data))(types.boolean, types.boolean))
 def get_write_spike_data_functions(saveSites,writeOnRun):
     if saveSites:
         if writeOnRun:
@@ -188,9 +194,19 @@ def save_initial_network_state(X, t0, saveSites, writeOnRun):
         _      = write_spk_time(X_data, t0, i, X[i]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
     return X_data
 
+@njit(type_X_data(types.boolean,type_writesave_spk_data,type_writesave_spk_data,type_X_data,types.boolean,types.float64,types.float64,types.int64,types.int64[:],types.int64))
+def dump_spike_data_sequential_update(do_dump_data,save_spk_time_func,write_spk_time_func,X_data,dtsample_is_1,t,dt,i,X,Xa):
+    if do_dump_data:
+        for k in range(X.size):
+            X_data  = save_spk_time_func( X_data, t*dt, k, X[k]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+            _       = write_spk_time_func(X_data, t*dt, k, X[k]) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    elif dtsample_is_1:
+        X_data  = save_spk_time_func( X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+        _       = write_spk_time_func(X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
+    return X_data
 
 @njit
-def open_file(spkFileName,saveSites_and_writeOnRun):
+def open_file(spkFileName,saveSites_and_writeOnRun,save_site_state_change):
     if saveSites_and_writeOnRun:
         #spk_file = open(spkFileName,'w')
         #spk_file.write('#t,k,Xk\n') # header
@@ -206,7 +222,11 @@ def open_file(spkFileName,saveSites_and_writeOnRun):
         #print('##################################################')
         #print('##################################################')
         #print('[[[ BEGINNING OF FILE ]]]')
-        print('#t,k,X')
+        if save_site_state_change:
+            header_txt = '#t,k,dX'
+        else:
+            header_txt = '#t,k,X'
+        print(header_txt)
     return None
 
 @njit
@@ -226,7 +246,28 @@ def close_file(spkFile,spkFileName,saveSites_and_writeOnRun):
         #print('##################################################')
 
 
-@njit
+#@njit
+#def get_ring_neighbors_periodic(N):
+#    return [ [(k-1)%N,(k+1)%N] for k in range(N) ] # the (k+-1) mod N implements the periodic boundary conditions
+
+@njit(types.int64[:,:](types.int64))
+def get_ring_neighbors_periodic(N):
+    n = numpy.empty((N, 2), dtype=numpy.int64)
+    for k in range(N):
+        n[k, 0] = (k - 1) % N  # left neighbor
+        n[k, 1] = (k + 1) % N  # right neighbor
+    return n
+
+@njit(types.int64[:,:](types.int64))
+def get_ring_neighbors_free(N):
+    n        = get_ring_neighbors_periodic(N)
+    n[0,0]   = 1   # first site connects only to the right
+    n[0,1]   = 1   # first site connects only to the right
+    n[N-1,0] = N-2 # last site connects only to the left
+    n[N-1,1] = N-2 # last site connects only to the left
+    return n
+
+@njit(types.int64[:,:](types.int64,types.int64))
 def get_ring_neighbors(graph:GraphType,N):
     if graph == GraphType.RING:
         return get_ring_neighbors_periodic(N)
@@ -235,26 +276,6 @@ def get_ring_neighbors(graph:GraphType,N):
     else:
         raise ValueError(f'get_neighbors not defined for graph {graph}')
 
-@njit
-def get_ring_neighbors_periodic(N):
-    return [ [(k-1)%N,(k+1)%N] for k in range(N) ] # the (k+-1) mod N implements the periodic boundary conditions
-
-@njit
-def get_ring_neighbors_periodic(N):
-    n = numpy.empty((N, 2), dtype=numpy.int64)
-    for k in range(N):
-        n[k, 0] = (k - 1) % N  # left neighbor
-        n[k, 1] = (k + 1) % N  # right neighbor
-    return n
-
-@njit
-def get_ring_neighbors_free(N):
-    n = get_ring_neighbors_periodic(N)
-    n[0,0]   = 1   # first site connects only to the right
-    n[0,1]   = 1   # first site connects only to the right
-    n[N-1,0] = N-2 # last site connects only to the left
-    n[N-1,1] = N-2 # last site connects only to the left
-    return n
 
 @njit(types.int64(types.boolean))
 def bool2int(x):
@@ -327,11 +348,11 @@ def state_iter_Tome_Oliveira_mod(X,n,inv_l):
              the particle with prob 1/lambda                 the particle with the same chance as that of finding an active neighbor
     """
     #return bool2int( numpy.random.random() > inv_l ) if X else bool2int(numpy.random.random() < n)
-    v = 1.0/(1.0 + inv_l)
+    v = 1.0/(1.0 + inv_l) # v = lambda / (1 + lambda)
     if X: # site is occupied
-        return bool2int(numpy.random.random() > inv_l*v) # r > 1/lambda: stays occupied; r < 1/lambda: annihilation
+        return bool2int(numpy.random.random() > inv_l*v) # r > 1/(1+lambda): stays occupied; r < 1/(1+lambda): annihilation
     else: # site is empty
-        return bool2int(numpy.random.random() < n*v) # r < n: infection; r>n: stays empty
+        return bool2int(numpy.random.random() < n*v) # r < n*lambda / (1 + lambda): infection; r>n: stays empty
 
 @njit(types.int64(types.int64,types.float64,types.float64))
 def state_iter_Dickman_mod(X,n,v):
@@ -434,13 +455,41 @@ def get_site_state_iterator_alpha(iterdynamics,l):
         alpha       = l / (1.0 + l) # v, book of Marro & Dickman
     return alpha
 
-@njit
-def stack_add(stack,k):
-    # adds k to the top of the stack s [i.e., to position s(1) ]
-    # s is a vector with fixed length
-    # stack_add will shift all elements of s to the right, and add k as the first element in s
-    stack = numpy.roll(stack,1)
-    stack[0] = k
+#@njit
+#def stack_add(stack,k):
+#    # adds k to the top of the stack s [i.e., to position s(1) ]
+#    # s is a vector with fixed length
+#    # stack_add will shift all elements of s to the right, and add k as the first element in s
+#    stack = numpy.roll(stack,1)
+#    stack[0] = k
+
+#type_Listuint_LIFO = types.Tuple((types.int64[:],types.int64))
+#@njit(type_Listuint_LIFO(types.int64))
+#def Listuint_LIFO_init(size_max):
+#    size = 0
+#    lst  = numpy.full(size_max,-1,dtype=numpy.int64)
+#    return lst,size
+#
+#@njit(type_Listuint_LIFO(types.int64[:],types.int64,types.int64))
+#def Listuint_LIFO_add(lst,size,value):
+#    if size < len(lst):
+#        lst[size]  = value
+#        size      += 1
+#    return lst,size
+#
+#@njit(types.Tuple((types.int64,types.int64[:],types.int64))(types.int64[:],types.int64))
+#def Listuint_LIFO_pop(lst,size):
+#    if size > 0:
+#        size -= 1
+#    return lst[size],lst,size # returns last element
+#
+#@njit(type_Listuint_LIFO(types.int64[:]))
+#def get_active_sites_list(X):
+#    lst_active_sites,lst_active_sites_N = Listuint_LIFO_init(len(X))
+#    for k in range(len(X)):
+#        if X[k]:
+#            Listuint_LIFO_add(lst_active_sites,lst_active_sites_N,k)
+#    return lst_active_sites,lst_active_sites_N
 
 type_cyclic_stack_data = types.Tuple((types.float64[:],types.int64))
 @njit(type_cyclic_stack_data(types.int64))
@@ -503,35 +552,71 @@ def get_IC(X0, fX0, X0Rand, N):
         X = get_ordered_state(X,fX0)
     return X
 
+@njit(types.Tuple((types.int64[:],types.int64,types.float64[:],types.int64))(type_state_iter,types.int64,types.float64,types.int64[:],types.int64,types.float64,types.boolean,types.boolean,types.int64[:,:]))
+def Run_transient_sequential(state_iter,tTrans_eff,alpha,X,M,fX0,is_aval_sim,is_meanfield,neigh):
+    N                   = len(X)
+    N_fl                = float(len(X))
+    sum_X               = sum(X)
+    rho_memory,cs_count = CyclicStack_Init(M)
+    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
+    for t in range(1,tTrans_eff):
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
+            break
+        i                   = numpy.random.randint(0,N) # selecting update site
+        Xa                  = X[i]
+        if is_meanfield:
+            n_act_neigh     = float(sum_X-X[i])/(N_fl-1.0)
+        else:
+            n_act_neigh     = sum(X[neigh[i]])/float(len(neigh[i]))
+        X[i]                = state_iter(X[i],n_act_neigh,alpha) # updating site i
+        sum_X              += X[i] - Xa # +1 if activated i; -1 if deactivated i
+        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
+    return X,sum_X,rho_memory,cs_count
+
+@njit(types.Tuple((types.int64[:],types.int64,types.float64[:],types.int64))(type_state_iter,types.int64,types.float64,types.int64[:],types.int64,types.float64,types.boolean,types.boolean,types.int64[:,:]))
+def Run_transient_parallel(state_iter,tTrans,alpha,X,M,fX0,is_aval_sim,is_meanfield,neigh):
+    N                   = len(X)
+    N_fl                = float(len(X))
+    sum_X               = sum(X)
+    rho_prev            = float(sum_X) / N_fl
+    rho_memory,cs_count = CyclicStack_Init(M)
+    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
+    for t in range(1,tTrans):
+        # updates sum_X and X as needed if the network activity must be restarted
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
+            break
+        if is_meanfield:
+            n_act_neigh = rho_prev
+        else:
+            X_prev      = X.copy()
+        sum_X           = 0
+        for i in range(N):
+            if not is_meanfield:
+                n_act_neigh = sum(X_prev[neigh[i]])/float(len(neigh[i]))
+            X[i]   = state_iter(X[i],n_act_neigh,alpha)
+            sum_X += X[i]
+        rho_prev            = float(sum_X) / N_fl
+        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho_prev) 
+    return X,sum_X,rho_memory,cs_count
+
 @njit
-def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
+def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     # all sites update in the same time step -- matches the GL model
     X                   = get_IC(X0, fX0, X0Rand, N)     
     is_aval_sim         = sim == SimulationType.AVAL
     state_iter          = get_site_state_iterator(iterdynamics)
     alpha               = get_site_state_iterator_alpha(iterdynamics,l)
     N_fl                = float(N)
-    sum_X               = 0
-    rho_prev            = float(sum(X)) / N_fl
-    rho_memory,cs_count = CyclicStack_Init(M)
-    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
-    for t in range(1,tTrans):
-        sum_X = 0
-        for i in range(N):
-            X[i]   = state_iter(X[i],rho_prev,alpha)
-            sum_X += X[i]
-        # updates rho_temp and X as needed if the network activity must be restarted
-        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
-        if not continue_time_loop:
-            break
-        #rho_temp        = float(rho_temp) / N_fl
-        rho_prev        = float(sum_X) / N_fl
-        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho_prev) # keeping a memory of the fraction of active sites in the previous M steps (since it is mean-field, it doesn't matter which sites are active)
+
+    X,sum_X,rho_memory,cs_count  = Run_transient_parallel(state_iter,tTrans,alpha,X,M,fX0,is_aval_sim,True,numpy.zeros((0,2),dtype=numpy.int64))
+    rho_prev                     = float(sum_X) / N_fl
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
     X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
-    spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
+    spk_file                     = open_file(spkFileName, saveSites and writeOnRun, False)
 
     rho                 = numpy.zeros(tTotal-tTrans,dtype=numpy.float64)
     rho[0]              = rho_prev
@@ -552,91 +637,73 @@ def Run_MF_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,sim,saveSi
         rho[t]        = rho_prev
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
-    return rho, X_data
+    return rho, numpy.arange(rho.size,dtype=numpy.float64), X_data
 
 @njit
-def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,iterdynamics,saveSites,writeOnRun,spkFileName):
+def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     # only 1 site is attempted update at each time step
     X                   = get_IC(X0, fX0, X0Rand, N)
+    is_aval_sim         = sim == SimulationType.AVAL
     state_iter          = get_site_state_iterator(iterdynamics)
     alpha               = get_site_state_iterator_alpha(iterdynamics,l)
     N_fl                = float(N)
     tTrans_eff          = int(numpy.round(tTrans / dt))
     tTotal_eff          = int(numpy.round(tTotal / dt))
+    dtsample            = int(dtsample-1) if dtsample>1 else 1
+    dtsample_is_1       = dtsample == 1
     n_neigh             = N_fl - 1.0
-    sum_X               = sum(X)
-    rho_memory,cs_count = CyclicStack_Init(M)
-    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
-    for t in range(1,tTrans_eff):
-        #i      = random.randint(0,N-1) # selecting update site
-        i      = numpy.random.randint(0,N) # selecting update site
-        Xa     = X[i]
-        X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
-        sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        #sum_of_X = sum(X)
-        if sum_X < 1:
-            if M == 0:
-                break
-            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
-            sum_X = sum(X)
-        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
 
+    X,sum_X,rho_memory,cs_count  = Run_transient_sequential(state_iter,tTrans_eff,alpha,X,M,fX0,is_aval_sim,True,numpy.zeros((0,2),dtype=numpy.int64))
+    
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
     X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
-    spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
+    spk_file                     = open_file(spkFileName, saveSites and writeOnRun, dtsample_is_1)
+    dump_data                    = (saveSites or writeOnRun) and (dtsample > 1)
 
-    rho                 = numpy.zeros(tTotal_eff-tTrans_eff,dtype=numpy.float64)
+    rho                 = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
+    time                = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
     sum_X               = sum(X)
     rho[0]              = float(sum_X) / N_fl
+    time[0]             = 0.0
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
-        #i      = random.randint(0,N-1) # selecting update site
+        # deciding whether to reseed activity...
+        # this allows us to record the visit to the absorbing state to split avalanches in the future analysis
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
+            break
         i      = numpy.random.randint(0,N) # selecting update site
         Xa     = X[i]
         X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
-        sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        X_data = save_spk_time( X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        if sum_X < 1:
-            if M == 0:
-                break
-            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
-            sum_X = sum(X)
-        rho[t]              = float(sum_X) / N_fl
+        sum_X += X[i] - Xa  # +1 if activated i; -1 if deactivated i
+        if t%dtsample == 0: # we only save spikes for time steps multiples of dtsample
+            X_data  = dump_spike_data_sequential_update(dump_data,save_spk_time,write_spk_time,X_data,dtsample_is_1,t,dt,i,X,Xa)
+            rho[t]  = float(sum_X) / N_fl
+            time[t] = t*dt
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
-    return rho, X_data
+    return rho[numpy.logical_not(numpy.isnan(rho))], time[numpy.logical_not(numpy.isnan(rho))], X_data
 
 @njit
-def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
+def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     X                   = get_IC(X0, fX0, X0Rand, N)
     neigh               = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
     is_aval_sim         = sim == SimulationType.AVAL
     state_iter          = get_site_state_iterator(iterdynamics)
     alpha               = get_site_state_iterator_alpha(iterdynamics,l)
     N_fl                = float(N)
-    rho_memory,cs_count = CyclicStack_Init(M)
-    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
-    for t in range(1,tTrans):
-        X_prev = X.copy()
-        sum_X  = 0
-        for i in range(N):
-            X[i]   = state_iter(X[i],sum(X_prev[neigh[i]])/float(len(neigh[i])),alpha)
-            sum_X += X[i]
-        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
-        if not continue_time_loop:
-            break
-        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
-    
+
+    X,sum_X,rho_memory,cs_count  = Run_transient_parallel(state_iter,tTrans,alpha,X,M,fX0,is_aval_sim,False,neigh)
+
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
     X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
-    spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
+    spk_file                     = open_file(spkFileName, saveSites and writeOnRun, False)
     
     rho                 = numpy.zeros(tTotal-tTrans, dtype=numpy.float64)
-    rho[0]              = float(sum(X)) / N_fl
+    rho[0]              = float(sum_X) / N_fl
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal-tTrans):
@@ -654,57 +721,50 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynami
         rho[t]        = float(sum_X) / N_fl
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
-    return rho, X_data
+    return rho, numpy.arange(rho.size,dtype=numpy.float64), X_data
 
 @njit
-def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,M,graph,iterdynamics,saveSites,writeOnRun,spkFileName):
+def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph,iterdynamics,sim,saveSites,writeOnRun,spkFileName):
     X                   = get_IC(X0,fX0,X0Rand,N)
     neigh               = get_ring_neighbors(graph,N) #neigh[i][0] -> index of left neighbor; neigh[i][1] -> index of right neighbor;
+    is_aval_sim         = sim == SimulationType.AVAL
     state_iter          = get_site_state_iterator(iterdynamics)
     alpha               = get_site_state_iterator_alpha(iterdynamics,l)
     N_fl                = float(N)
-    tTrans_eff          = int(numpy.round(tTrans / dt))
-    tTotal_eff          = int(numpy.round(tTotal / dt))
-    sum_X               = sum(X)
-    rho_memory,cs_count = CyclicStack_Init(M)
-    rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,fX0)
-    for t in range(1,tTrans_eff):
-        #i      = random.randint(0,N-1) # selecting update site
-        i      = numpy.random.randint(0,N) # selecting update site
-        Xa     = X[i]
-        X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
-        sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        if sum_X < 1:
-            if M == 0:
-                break
-            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
-            sum_X = sum(X)
-        rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
+    tTrans_eff          = int(numpy.round(tTrans / dt)) # this expands time only if dt=1/N (i.e. expandtime==True)
+    tTotal_eff          = int(numpy.round(tTotal / dt)) # this expands time only if dt=1/N (i.e. expandtime==True)
+    dtsample            = int(dtsample-1) if dtsample>1 else 1
+    dtsample_is_1       = dtsample == 1
+
+    X,sum_X,rho_memory,cs_count  = Run_transient_sequential(state_iter,tTrans_eff,alpha,X,M,fX0,is_aval_sim,False,neigh)
+    
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
     X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
-    spk_file                     = open_file(spkFileName, saveSites and writeOnRun)
+    spk_file                     = open_file(spkFileName, saveSites and writeOnRun, dtsample_is_1)
+    dump_data                    = (saveSites or writeOnRun) and (dtsample > 1)
 
-    rho                 = numpy.zeros(tTotal_eff-tTrans_eff, dtype=numpy.float64)
+    rho                 = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
+    time                = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
     sum_X               = sum(X)
     rho[0]              = float(sum_X) / N_fl
+    time[0]             = 0.0
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
-        #i      = random.randint(0,N-1) # selecting update site
+        # deciding whether to reseed activity...
+        # this allows us to record the visit to the absorbing state to split avalanches in the future analysis
+        continue_time_loop, X, sum_X = check_network_activity(X, is_aval_sim, sum_X, rho_memory, M, cs_count)
+        if not continue_time_loop:
+            break
         i      = numpy.random.randint(0,N) # selecting update site
         Xa     = X[i]
         X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
-        sum_X += X[i] - Xa # +1 if activated i; -1 if deactivated i
-        X_data = save_spk_time( X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        _      = write_spk_time(X_data, t*dt, i, X[i]-Xa) # this function can just be a dummy placeholder depending on saveSites and writeOnRun
-        #sum_of_X = sum(X)
-        if sum_X < 1:
-            if M == 0:
-                break
-            X     = get_random_state(X, CyclicStack_GetRandom(rho_memory,cs_count))
-            sum_X = sum(X)
-        rho[t] = float(sum_X) / N_fl
+        sum_X += X[i] - Xa  # +1 if activated i; -1 if deactivated i
+        if t%dtsample == 0: # we only save spikes for time steps multiples of dtsample
+            X_data  = dump_spike_data_sequential_update(dump_data,save_spk_time,write_spk_time,X_data,dtsample_is_1,t,dt,i,X,Xa)
+            rho[t]  = float(sum_X) / N_fl
+            time[t] = t*dt
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
-    return rho, X_data
+    return rho[numpy.logical_not(numpy.isnan(rho))], time[numpy.logical_not(numpy.isnan(rho))], X_data

@@ -11,3 +11,4 @@ test_sim/
 debug/
 modules/cpsim_mistakes_in_sim_need_X_prev.py
 modules/sim_func_maybe_wrong.py
+ts_kill_all_jobs.sh

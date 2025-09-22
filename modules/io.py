@@ -8,25 +8,24 @@ import contextlib
 import modules.misc_func as misc
 
 def add_simulation_parameters(parser):
-    parser.add_argument('-l',            nargs=1, required=False, metavar='l_PARAM',      type=float, default=[1.1],   help='CP rate (l_c=3.297848 for ring, iterdynamics=md; l_c=2 for ring, iterdynamics=to; l_c=1 for mean-field)')
-    parser.add_argument('-N',            nargs=1, required=False, metavar='N_PARAM',      type=int,   default=[10000], help='number of sites in the network')
-    parser.add_argument('-M',            nargs=1, required=False, metavar='M_PARAM',      type=int,   default=[100],   help='number of memory time steps for quasistationary simulation (whenever the system goes into absorbing, it is placed in a random state chosen from the last M visited states)')
-    parser.add_argument('-X0',           nargs=1, required=False, metavar='X0_PARAM',     type=int,   default=[1],     help='IC to each site (a scalar 0 or 1)')
-    parser.add_argument('-fX0',          nargs=1, required=False, metavar='fX0_PARAM',    type=float, default=[0.5],   help='fraction of sites assigned to X0 as IC (remaining are zero)')
-    parser.add_argument('-tTotal',       nargs=1, required=False, metavar='tTotal_PARAM', type=int,   default=[10000], help='total number of time steps')
-    parser.add_argument('-tTrans',       nargs=1, required=False, metavar='tTrans_PARAM', type=int,   default=[0],     help='number of transient time steps')
-    parser.add_argument('-graph',        nargs=1, required=False, metavar='GRAPH_TYPE',   type=str,   default=['ring'],          choices=['mf', 'alltoall', 'ring', 'ringfree'], help='mf,alltoall -> mean-field simulation; ring -> 1+1 simulation with periodic boundary conditions; ringfree -> ring with free boundaries')
-    parser.add_argument('-iterdynamics', nargs=1, required=False, metavar='ITER_TYPE',    type=str,   default=['marro_dickman'], choices=['marro_dickman', 'tome_oliveira', 'md', 'to'], help='marro_dickman,md -> described in pg 178pdf/162book Marro & Dickman book; tome_oliveira,to -> described in pg 308pdf Tome & Oliveira book before eq 13.6')
-    parser.add_argument('-update',       nargs=1, required=False, metavar='UPDATE_TYPE',  type=str,   default=['seq'],           choices=['seq','sequential','par','parallel'], help='seq -> standard update scheme: 1 particle update/ts (paragraph after eq 3.35 in Henkel book); par -> parallel update (attempts to update all sites at each ts, matches the E/I network)')
-    parser.add_argument('-sim',          nargs=1, required=False, metavar='SIM_TYPE',     type=str,   default=['timeevo'],       choices=['timeevo', 'aval'], help='timeevo -> simple time evolution simulation (quasistatic if M > 0); aval -> avalanche simulation; seeds 1 site every time activity dies out')
-    #parser.add_argument('-activation',   nargs=1, required=False, metavar='ACTIV_TYPE',   type=str,   default=['rate'],         choices=['rate', 'prob'], help='rate -> each site is activated if random < l*r (r=frac of act neigh); prob -> each site is activated if random < p*r (p=l/(1+l) and r=frac of act neigh -- seems to yield a wrong l_c, but seems to be the correct one according to books)')
-    #parser.add_argument('-algorithm',    nargs=1, required=False, metavar='ALGO_TYPE',    type=str,   default=['tomeoliveira'], choices=['mine', 'tomeoliveira'], help='mine -> my alogirhtm -- seems to be wrong; tomeoliveira -> algorithm describe in pg 308pdf/402 of the Tome & Oliveira book, before eq (13.6)')
-    parser.add_argument('-noX0Rand',      required=False, action='store_true', default=False, help='if set, Xi is generated sequentially')
-    parser.add_argument('-saveSites',     required=False, action='store_true', default=False, help='if set, saves the Xi variable for every site (may consume a lot of memory!)')
-    parser.add_argument('-writeOnRun',    required=False, action='store_true', default=False, help='if set, writes the Xi variables to an output *_spk.txt file during the main time loop (needs -saveSites to be set, and avoids memory errors at the expense of a slower simulation)')
-    parser.add_argument('-mergespkfile',  required=False, action='store_true', default=False, help='if set, tries to merge the output *.mat with the output *_spk.txt file (if it exists) into a single *.mat file, and removes the *_spk.txt file. It requires both -saveSites and -writeOnRun to be set. WARNING: for some unknown reason, sometimes the merging is not successful.')
-    parser.add_argument('-expandtime',    required=False, action='store_true', default=False, help='if set, then uses the dt=1/N to expand the total simulation time: tTotal_eff = tTotal / dt (only for sequential update)')
-    parser.add_argument('-outputFile',    nargs=1, required=False, metavar='OUTPUT_FILE_NAME', type=str, default=['cp.mat'], help='name of the output file')
+    parser.add_argument('-l'           , nargs=1, required=False, metavar='l_PARAM'         , type=float , default=[1.1]            , help='CP rate (l_c=3.297848 for ring, iterdynamics=md; l_c=2 for ring, iterdynamics=to; l_c=1 for mean-field)')
+    parser.add_argument('-N'           , nargs=1, required=False, metavar='N_PARAM'         , type=int   , default=[10000]          , help='number of sites in the network')
+    parser.add_argument('-M'           , nargs=1, required=False, metavar='M_PARAM'         , type=int   , default=[100]            , help='number of memory time steps for quasistationary simulation (whenever the system goes into absorbing, it is placed in a random state chosen from the last M visited states)')
+    parser.add_argument('-X0'          , nargs=1, required=False, metavar='X0_PARAM'        , type=int   , default=[1]              , help='IC to each site (a scalar 0 or 1)')
+    parser.add_argument('-fX0'         , nargs=1, required=False, metavar='fX0_PARAM'       , type=float , default=[0.5]            , help='fraction of sites assigned to X0 as IC (remaining are zero)')
+    parser.add_argument('-dtsample'    , nargs=1, required=False, metavar='dtsample_PARAM'  , type=int   , default=[1]              , help='sampling interval (in units of dt=1/N if expandtime is set; this is ignored when update == parallel).\n\tWe only sample the system in time steps that are a multiple of dtsample.\n\tThis reduces dramatically the saved data in sequential update if dtsample=N.\n\tFor example,\n\t\tif expandtime==True:\n\t\t\t* dt=1/N;\n\t\t\t* sampling interval s = dtsample;\n\t\t\t* running time T = tTotal * N\n\t\t\t* simulation time t = 1 to T,\n\t\t\t* sampling when t%%s == 0 (i.e., t is a multiple of dtsample)\n\t\t\t\tif dtsample = 1: sample dt=1/N time interval (every time step)\n\t\t\t\tif dtsample = N: sample every N*dt = 1 Monte Carlo step (in practice, this means N time steps)\n\t\tif expandtime==False:\n\t\t\t* dt = 1\n\t\t\t* sampling interval s = dtsample;\n\t\t\t* running time T = tTotal;\n\t\t\t* simulation time t = 1 to T\n\t\t\t* sampling when t%%s == 0 (i.e., t is a multiple of dtsample)\n\t\t\t\tif dtsample == 1: sample every time step\n\t\t\t\tif dtsample == N: sample every Monte Carlo step (i.e., N time steps)')
+    parser.add_argument('-tTotal'      , nargs=1, required=False, metavar='tTotal_PARAM'    , type=int   , default=[10000]          , help='total number of time steps. This becomes tTotal/dt if expandtime == True')
+    parser.add_argument('-tTrans'      , nargs=1, required=False, metavar='tTrans_PARAM'    , type=int   , default=[0]              , help='number of transient time steps. This becomes tTrans/dt if expandtime == True')
+    parser.add_argument('-outputFile'  , nargs=1, required=False, metavar='OUTPUT_FILE_NAME', type=str   , default=['cp.mat']       , help='name of the output file')
+    parser.add_argument('-graph'       , nargs=1, required=False, metavar='GRAPH_TYPE'      , type=str   , default=['ring']         , choices=['mf', 'alltoall', 'ring', 'ringfree']        , help='mf,alltoall -> mean-field simulation; ring -> 1+1 simulation with periodic boundary conditions; ringfree -> ring with free boundaries')
+    parser.add_argument('-iterdynamics', nargs=1, required=False, metavar='ITER_TYPE'       , type=str   , default=['marro_dickman'], choices=['marro_dickman', 'tome_oliveira', 'md', 'to'], help='marro_dickman,md -> described in pg 178pdf/162book Marro & Dickman book; tome_oliveira,to -> described in pg 308pdf Tome & Oliveira book before eq 13.6')
+    parser.add_argument('-update'      , nargs=1, required=False, metavar='UPDATE_TYPE'     , type=str   , default=['seq']          , choices=['seq','sequential','par','parallel']         , help='seq -> standard update scheme: 1 particle update/ts (paragraph after eq 3.35 in Henkel book); par -> parallel update (attempts to update all sites at each ts, matches the E/I network)')
+    parser.add_argument('-sim'         , nargs=1, required=False, metavar='SIM_TYPE'        , type=str   , default=['timeevo']      , choices=['timeevo', 'aval']                           , help='timeevo -> simple time evolution simulation (quasistatic if M > 0); aval -> avalanche simulation; seeds 1 site every time activity dies out')
+    parser.add_argument('-noX0Rand'    , required=False, action='store_true', default=False, help='if set, Xi is generated sequentially')
+    parser.add_argument('-saveSites'   , required=False, action='store_true', default=False, help='if set, saves the Xi variable for every site (may consume a lot of memory!)')
+    parser.add_argument('-writeOnRun'  , required=False, action='store_true', default=False, help='if set, writes the Xi variables to an output *_spk.txt file during the main time loop (needs -saveSites to be set, and avoids memory errors at the expense of a slower simulation)')
+    parser.add_argument('-mergespkfile', required=False, action='store_true', default=False, help='if set, tries to merge the output *.mat with the output *_spk.txt file (if it exists) into a single *.mat file, and removes the *_spk.txt file. It requires both -saveSites and -writeOnRun to be set. WARNING: for some unknown reason, sometimes the merging is not successful.')
+    parser.add_argument('-expandtime'  , required=False, action='store_true', default=False, help='if set, then uses the dt=1/N to expand the total simulation time: tTotal_eff = tTotal / dt (only for sequential update)')
     return parser
 
 def get_help_string(parser):
@@ -101,7 +100,7 @@ def merge_simulation_files(fname_main_output, fname_spk_output='', remove_spk_fi
     if verbose:
         print(f'  ... merged file saved as {fname_merged}')
 
-def save_simulation_file(argv, args, rho, X_data):
+def save_simulation_file(argv, args, rho, time, X_data):
     # X_data[i,:] = [t,k,X]
     if not (type(X_data) is numpy.ndarray):
         X_data = numpy.array(X_data, dtype=float)
@@ -111,7 +110,7 @@ def save_simulation_file(argv, args, rho, X_data):
     args.graph        = args.graph.name.lower()        if hasattr(args.graph       ,'name') else str(args.graph       ).lower()
     args.update       = args.update.name.lower()       if hasattr(args.update      ,'name') else str(args.update      ).lower()
     args.iterdynamics = args.iterdynamics.name.lower() if hasattr(args.iterdynamics,'name') else str(args.iterdynamics).lower()
-    scipy.io.savemat(args.outputFile,dict(cmd_line=' '.join(argv),time=numpy.arange(len(rho))*args.dt,rho=rho, X_values=X_data[:,2], X_ind=X_data[:,1], X_time=X_data[:,0],**args),long_field_names=True,do_compression=True)
+    scipy.io.savemat(args.outputFile,dict(cmd_line=' '.join(argv),time=time,rho=rho, X_values=X_data[:,2], X_ind=X_data[:,1], X_time=X_data[:,0],**args),long_field_names=True,do_compression=True)
     print(f'  ... simulation file saved ::: {args.outputFile}')
 
 def get_output_filename(path):

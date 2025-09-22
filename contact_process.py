@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
-import time
+import time as ostime
 import numpy
 import argparse
 import datetime
@@ -25,14 +25,16 @@ def main():
     parser = io.add_simulation_parameters(parser)
 
     args              = io.namespace_to_structtype(parser.parse_args())
+
+    # validating inputs to the simulation
     args.sim          = cp.str_to_SimulationType(args.sim)
     args.graph        = cp.str_to_GraphType(args.graph)
     args.update       = cp.str_to_UpdateType(args.update)
     args.iterdynamics = cp.str_to_StateIterType(args.iterdynamics)
     args.docstring    = io.get_help_string(parser)
     args.X0Rand       = not args.noX0Rand
-    #args.expandtime   = not cp.is_parallel_update(args.update)
-    args.dt           = cp.Get_Simulation_Timescale(args)
+    args.dt           = cp.Get_Simulation_Timescale(args) # dt = 1/N if (not parallel update) and (expandtime); otherwise, dt=1
+    args.expandtime   = args.expandtime and not cp.is_parallel_update(args.update) # expandtime==True only if it is True AND it isn't a parallel update simulation
     args.outputFile   = io.get_new_file_name(io.get_output_filename(args.outputFile))
     args.spkFileName  = args.outputFile.replace('.mat','_spk.txt') if args.writeOnRun else ''
 
@@ -49,26 +51,26 @@ def main():
 
     print("* Running simulation... Total time steps = %d" % (int(numpy.round(args.tTotal / args.dt))))
     simulation_func = cp.Get_Simulation_Func(args)
-    sim_time_start  = time.monotonic()
+    sim_time_start  = ostime.monotonic()
 
 
     with (open(args.spkFileName, 'w') if (args.writeOnRun and args.saveSites) else contextlib.nullcontext(sys.stdout)) as spk_file:
         if args.writeOnRun and args.saveSites:
             print('  ... writing file ',args.spkFileName,' during simulation')
         with contextlib.redirect_stdout(spk_file):
-            sim_params_dict = io.keep_keys(dict(**args),io.get_func_param(simulation_func))
-            rho, X_data     = simulation_func(**sim_params_dict)
+            sim_params_dict   = io.keep_keys(dict(**args),io.get_func_param(simulation_func))
+            rho, time, X_data = simulation_func(**sim_params_dict)
     
     ##### FOR DEBUG ... disable redirection of stdout
     #rho, X_data     = simulation_func(**io.keep_keys(dict(**args),io.get_func_param(simulation_func)))
 
 
-    sim_time_end    = time.monotonic()
+    sim_time_end    = ostime.monotonic()
     print("* End of simulation... Total time: {}".format(datetime.timedelta(seconds=sim_time_end - sim_time_start)))
 
     print('* Writing ... %s'%args.outputFile)
-    io.save_simulation_file(sys.argv, args, rho, X_data)
-    del rho, X_data # releasing memory to avoid memory error when merging files
+    io.save_simulation_file(sys.argv, args, rho, time, X_data)
+    del rho, time, X_data # releasing memory to avoid memory error when merging files
     if args.saveSites and args.writeOnRun and args.mergespkfile:
         io.merge_simulation_files(args.outputFile, args.spkFileName, remove_spk_file=False, verbose=True)
 
