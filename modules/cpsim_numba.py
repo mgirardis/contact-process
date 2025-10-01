@@ -663,11 +663,13 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun, dtsample_is_1)
     dump_data                    = (saveSites or writeOnRun) and (dtsample > 1)
 
-    rho                 = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
-    time                = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
+    n_data              = 1 + (tTotal_eff - tTrans_eff - 1) // dtsample
+    rho                 = numpy.full(n_data, numpy.nan, dtype=numpy.float64)
+    time                = numpy.full(n_data, numpy.nan, dtype=numpy.float64)
     sum_X               = sum(X)
     rho[0]              = float(sum_X) / N_fl
     time[0]             = 0.0
+    trec                = 0
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
@@ -681,12 +683,13 @@ def Run_MF_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,iterdynamics
         X[i]   = state_iter(X[i],float(sum_X-X[i])/n_neigh,alpha) # updating site i
         sum_X += X[i] - Xa  # +1 if activated i; -1 if deactivated i
         if t%dtsample == 0: # we only save spikes for time steps multiples of dtsample
-            X_data  = dump_spike_data_sequential_update(dump_data,save_spk_time,write_spk_time,X_data,dtsample_is_1,t,dt,i,X,Xa)
-            rho[t]  = float(sum_X) / N_fl
-            time[t] = t*dt
+            trec      += 1
+            X_data     = dump_spike_data_sequential_update(dump_data,save_spk_time,write_spk_time,X_data,dtsample_is_1,t,dt,i,X,Xa)
+            rho[trec]  = float(sum_X) / N_fl
+            time[trec] = t*dt
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,rho[t])
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
-    return rho[numpy.logical_not(numpy.isnan(rho))], time[numpy.logical_not(numpy.isnan(rho))], X_data
+    return rho, time, X_data
 
 type_netsimulation_input = (types.int64,types.int64,types.float64,types.boolean,types.float64,types.int64,types.int64,types.float64,types.int64,types.int64,types.int64,types.int64 ,types.int64,types.boolean,types.boolean,types.string)
 @njit(type_simulation_result(*type_netsimulation_input))
@@ -747,11 +750,13 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun, dtsample_is_1)
     dump_data                    = (saveSites or writeOnRun) and (dtsample > 1)
 
-    rho                 = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
-    time                = numpy.full(tTotal_eff-tTrans_eff, numpy.nan, dtype=numpy.float64)
+    n_data              = 1 + (tTotal_eff - tTrans_eff - 1) // dtsample
+    rho                 = numpy.full(n_data, numpy.nan, dtype=numpy.float64)
+    time                = numpy.full(n_data, numpy.nan, dtype=numpy.float64)
     sum_X               = sum(X)
     rho[0]              = float(sum_X) / N_fl
     time[0]             = 0.0
+    trec                = 0
     rho_memory,cs_count = CyclicStack_Init(M)
     rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,0,rho[0])
     for t in range(1,tTotal_eff-tTrans_eff):
@@ -765,9 +770,10 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph
         X[i]   = state_iter(X[i],sum(X[neigh[i]])/float(len(neigh[i])),alpha) # updating site i
         sum_X += X[i] - Xa  # +1 if activated i; -1 if deactivated i
         if t%dtsample == 0: # we only save spikes for time steps multiples of dtsample
-            X_data  = dump_spike_data_sequential_update(dump_data,save_spk_time,write_spk_time,X_data,dtsample_is_1,t,dt,i,X,Xa)
-            rho[t]  = float(sum_X) / N_fl
-            time[t] = t*dt
+            trec      += 1
+            X_data     = dump_spike_data_sequential_update(dump_data,save_spk_time,write_spk_time,X_data,dtsample_is_1,t,dt,i,X,Xa)
+            rho[trec]  = float(sum_X) / N_fl
+            time[trec] = t*dt
         rho_memory,cs_count = CyclicStack_Set(rho_memory,M,cs_count,t,float(sum_X) / N_fl)
     close_file(spk_file,spkFileName,saveSites and writeOnRun)
-    return rho[numpy.logical_not(numpy.isnan(rho))], time[numpy.logical_not(numpy.isnan(rho))], X_data
+    return rho, time, X_data

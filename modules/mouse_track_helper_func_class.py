@@ -2412,6 +2412,6 @@ def get_divisors(N):
 
 def is_list_of_list(v):
     if type(v) is list:
-        if type(v[0]) is list:
+        if (len(v) > 0) and (type(v[0]) is list):
             return True
     return False

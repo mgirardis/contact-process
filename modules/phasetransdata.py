@@ -150,11 +150,13 @@ def load_phasetrans_file(fname):
         d_files = [[] for _ in d['N']]
     return d['N'],pt_data,d_files
 
+
 def save_phasetrans_file(fname,N_values,pt_data,d_files):
     if os.path.isfile(fname):
         os.remove(fname)
         print(f' ::: WARNING ::: Replacing file ... {fname}')
     scipy.io.savemat(fname,{'N':N_values,'data':io.list_of_arr_to_arr_of_obj(pt_data ),'d_files':io.list_of_arr_to_arr_of_obj(d_files)})
+
 
 def merge_phasetrans_params_struct(s1,s2,param_name_control):
     if type(s1) is list:
@@ -171,6 +173,63 @@ def merge_phasetrans_params_struct(s1,s2,param_name_control):
     return misc.structtype(**d)
 
 
+def calc_mean_phasetrans_params(pt_lst,param_name_control='',param_name_orderpar='',return_as_struct=True):
+    """
+    pt_lst = list of structtype where each pt_list[i]
+                contains a phase transition table returned by calc_phassetrans_params_struct with return_as_struct==False
+                all phase transitions structs in the list must share the same param_name_control grid
+                pt_lst[i][:,0] -> param_name_control        
+                pt_lst[i][:,1] -> param_name_orderpar       
+                pt_lst[i][:,2] -> param_name_orderpar+'_std'
+                pt_lst[i][:,3] -> 'suscept'                 
+                pt_lst[i][:,4] -> 'suscept_std'             
+                pt_lst[i][:,5] -> 'n_time_steps_sample'     
+                pt_lst[i][:,6] -> 'n_data'                  
+    """
+    if not (type(pt_lst) is list):
+        pt_lst = [pt_lst]
+    if return_as_struct or (type(pt_lst[0]) is misc.structtype):
+        assert misc.nonempty_str(param_name_control) and misc.nonempty_str(param_name_orderpar), 'to return a struct or to input an array of structs, you must provide a param_name_orderpar and a param_name_control for the conversion from structtype to matrix'
+    if type(pt_lst[0]) is misc.structtype:
+        #raise ValueError('Each input must be a phase transition table returned by calc_phasetrans_params_struct with return_as_struct==False')
+        pt_lst = [convert_phasetrans_struct_to_matrix(pt,param_name_control,param_name_orderpar) for pt in pt_lst]
+    pt_lst = numpy.atleast_3d(pt_lst)
+    assert all(numpy.all(pt[:,0]==pt_lst[0,:,0]) for pt in pt_lst), 'all phase transition tables in pt_lst must share the same control parameter grid pt_list[i][:,0]'
+    measure_cols        = [1,3] # # order param and susceptibility
+    error_cols          = [2,4] # # order param and susceptibility errors
+    extra_cols          = [5,6] # # other data cols in phasetrans matrix
+    res                 = numpy.full(pt_lst[0].shape, numpy.nan, dtype=float)
+    res[:,0           ] = pt_lst[0,:,0] # control parameter
+    res[:,measure_cols] = numpy.nanmean(pt_lst[:,:,measure_cols],axis=0) # order param and susceptibility
+    res[:,error_cols  ] = numpy.nanmax( pt_lst[:,:,error_cols  ],axis=0) # order param and susceptibility errors
+    res[:,extra_cols  ] = numpy.nanmin( pt_lst[:,:,extra_cols  ],axis=0) # other data cols in phasetrans matrix
+    if return_as_struct:
+        return convert_phasetrans_matrix_to_struct(res,param_name_control,param_name_orderpar)
+    else:
+        return res
+
+def convert_phasetrans_struct_to_matrix(pt_struct,param_name_control,param_name_orderpar):
+    phasetrans_data      = numpy.full((pt_struct[param_name_control].size,7),numpy.nan)
+    phasetrans_data[:,0] = pt_struct[param_name_control        ]
+    phasetrans_data[:,1] = pt_struct[param_name_orderpar       ]
+    phasetrans_data[:,2] = pt_struct[param_name_orderpar+'_std']
+    phasetrans_data[:,3] = pt_struct['suscept'                 ]
+    phasetrans_data[:,4] = pt_struct['suscept_std'             ]
+    phasetrans_data[:,5] = pt_struct['n_time_steps_sample'     ]
+    phasetrans_data[:,6] = pt_struct['n_data'                  ]
+    return phasetrans_data
+
+def convert_phasetrans_matrix_to_struct(phasetrans_data,param_name_control,param_name_orderpar):
+    res = misc.structtype()
+    res[param_name_control        ] = phasetrans_data[:,0]
+    res[param_name_orderpar       ] = phasetrans_data[:,1]
+    res[param_name_orderpar+'_std'] = phasetrans_data[:,2]
+    res['suscept'                 ] = phasetrans_data[:,3]
+    res['suscept_std'             ] = phasetrans_data[:,4]
+    res['n_time_steps_sample'     ] = phasetrans_data[:,5]
+    res['n_data'                  ] = phasetrans_data[:,6]
+    return res
+
 def calc_phasetrans_params_struct(
     f_list,
     param_name_control,
@@ -182,6 +241,7 @@ def calc_phasetrans_params_struct(
     param_name_systemsize='N',
     param_name_time='time',
     calc_suscept_bootstrap_error=False,
+    return_as_struct=True,
     **bootstrap_args
 ):
     """
@@ -235,13 +295,15 @@ def calc_phasetrans_params_struct(
 
     Returns
     -------
-    res : structtype
+    res : structtype if return_as_struct==True
         Structured object containing:
             res[param_name_control]         : array of control parameter values
             res[param_name_orderpar]        : array of order parameter means
             res[param_name_orderpar+'_std'] : array of order parameter standard deviations
             res['suscept']                  : array of susceptibility values
             res['suscept_std']              : array of susceptibility errors
+            res['n_time_steps_sample']      : number of time steps between samples of the order parameter
+            res['n_data']                   : number of data points resulting from selecting the order parameter sampled with the interval n_time_steps_sample
 
     d_trim : list
         List of trimmed data dictionaries (only returned if `return_file_data=True`).
@@ -265,12 +327,7 @@ def calc_phasetrans_params_struct(
     progress_bar.close()
     ind             = numpy.argsort(phasetrans_data[:,0])  # sorting according to param value
     phasetrans_data = phasetrans_data[ind,:]
-    res = misc.structtype()
-    res[param_name_control        ] = phasetrans_data[:,0]
-    res[param_name_orderpar       ] = phasetrans_data[:,1]
-    res[param_name_orderpar+'_std'] = phasetrans_data[:,2]
-    res['suscept'                 ] = phasetrans_data[:,3]
-    res['suscept_std'             ] = phasetrans_data[:,4]
-    res['n_time_steps_sample'     ] = phasetrans_data[:,5]
-    res['n_data'                  ] = phasetrans_data[:,6]
-    return res, d_trim
+    if return_as_struct:
+        return convert_phasetrans_matrix_to_struct(phasetrans_data,param_name_control,param_name_orderpar), d_trim
+    else:
+        return phasetrans_data, d_trim

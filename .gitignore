@@ -1,6 +1,6 @@
 *.mat
 *.txt
-check_correlation_func.ipynb
+*.log
 test_sim_*/
 modules/__pycache__/
 run*.sh
@@ -12,3 +12,4 @@ debug/
 modules/cpsim_mistakes_in_sim_need_X_prev.py
 modules/sim_func_maybe_wrong.py
 ts_kill_all_jobs.sh
+check_missing_output_files.py

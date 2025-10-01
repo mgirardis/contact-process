@@ -94,6 +94,8 @@ def find_closest_value(X, x_c, return_values=False, return_all=False):
     else:
         return X[indices] if return_values else indices
 
+def _is_list_of_str(X):
+    return (type(X) is list) and ((len(X)>0) and (type(X[0]) is str))
 
 def get_par_value_from_str(str_list,par_name,dtype=int):
     if type(str_list) is str:
@@ -102,15 +104,49 @@ def get_par_value_from_str(str_list,par_name,dtype=int):
         return [get_par_value_from_str(idl,par_name) for idl in str_list]
 
 def par_value_in_str(str_list,par_name,par_value,dtype=int,par_str_fmt=None):
+    """
+    par_str_fmt == '{:FLAG}'
+                where FLAG is, e.g.,
+                d   for integers
+                g   for generic (autoformat numbers)
+                .5f for 5 decimal places floating point number
+    """
     if type(str_list) is str:
         par_value = numpy.atleast_1d(par_value).flatten()
-        if par_str_fmt is not None:
+        if exists(par_str_fmt):
             par_value = [ par_str_fmt.format(v) for v in par_value ]
-            dtype = str
+            dtype     = str
         val = get_par_value_from_str(str_list,par_name,dtype)
         return val in par_value if exists(val) else False
     else:
         return [ par_value_in_str(st,par_name,par_value,dtype,par_str_fmt) for st in str_list ]
+
+def sort_str_by_par_value(str_list,par_name,dtype=int):
+    if _is_list_of_str(str_list):
+        return sorted(str_list, key=lambda s: get_par_value_from_str(s,par_name,dtype))
+    elif type(str_list) is list:
+        return [ sort_str_by_par_value(s,par_name,dtype) for s in str_list ]
+    else:
+        return str_list
+
+def select_str_by_par_value(str_list,par_name,par_value,dtype=int,par_str_fmt=None,sort_result=True):
+    """
+    par_str_fmt == '{:FLAG}'
+                where FLAG is, e.g.,
+                d   for integers
+                g   for generic (autoformat numbers)
+                .5f for 5 decimal places floating point number
+    """
+    if _is_list_of_str(str_list):
+        if sort_result:
+            return sort_str_by_par_value(select_str_by_par_value(str_list,par_name,par_value,dtype,par_str_fmt,sort_result=False),par_name,dtype)
+        else:
+            return [ s for s in str_list if par_value_in_str(s,par_name,par_value,dtype,par_str_fmt)   ]
+    elif type(str_list) is list:
+        return [ select_str_by_par_value(s,par_name,par_value,dtype,par_str_fmt,sort_result) for s in str_list ]
+    else:
+        return str_list
+        
 
 def txt_in_str(str_list,txt_list,condition_func=all):
     """
@@ -128,6 +164,13 @@ def txt_in_str(str_list,txt_list,condition_func=all):
         return condition_func(txt in str_list for txt in txt_list)
     else:
         return [ txt_in_str(st,txt_list,condition_func) in st for st in str_list]
+
+def get_percent_load_str(k,n_tot):
+    load_percent = 100*(k+1)//n_tot
+    return f'{k+1}/{n_tot} ({load_percent}%)'
+
+def nonempty_str(X):
+    return (type(X) is str) and (len(X)>0)
 
 def find_first(X,v):
     k = numpy.argmax(X==v)
@@ -201,7 +244,10 @@ def _split_array(a, n):
 def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, mask=None):
     """
     Performs linear regression on transformed data using scipy.stats.linregress.
-
+    I.e., this function fits a line
+        y_transform(y_data) = slope*x_transform(x_data) + intercept
+    and returns
+    fitpar = (slope,intercept)
     Parameters:
     ----------
     x_data : array-like
@@ -219,7 +265,7 @@ def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, 
 
     Returns:
     -------
-    coeffs : tuple
+    fitpar : tuple
         (slope, intercept) of the linear fit in transformed space.
     r_squared : float
         Coefficient of determination (R²).
