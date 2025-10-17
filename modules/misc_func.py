@@ -101,7 +101,7 @@ def get_par_value_from_str(str_list,par_name,dtype=int):
     if type(str_list) is str:
         return dtype(match.group(1)) if (match := re.search(par_name + r'(\d+(?:\.\d+)?)', str_list)) else None
     else:
-        return [get_par_value_from_str(idl,par_name) for idl in str_list]
+        return [get_par_value_from_str(idl,par_name,dtype) for idl in str_list]
 
 def par_value_in_str(str_list,par_name,par_value,dtype=int,par_str_fmt=None):
     """
@@ -172,13 +172,35 @@ def get_percent_load_str(k,n_tot):
 def nonempty_str(X):
     return (type(X) is str) and (len(X)>0)
 
+#@njit([
+#    types.optional(types.int64)(types.float64[:],types.float64),
+#    types.optional(types.int64)(types.int64[:],types.int64)
+#])
+@njit
 def find_first(X,v):
-    k = numpy.argmax(X==v)
-    return k if X[k]==v else None
+    for k,x in enumerate(X):
+        if x == v:
+            return k
+    return None
 
+#@njit([
+#    types.optional(types.int64)(types.float64[:],types.float64),
+#    types.optional(types.int64)(types.int64[:],types.int64)
+#])
+@njit
 def find_last(X,v):
-    k = X.size - 1 - numpy.argmax(X[::-1]==v)
-    return k if X[k]==v else None
+    for k in range(len(X)-1,-1,-1):
+        if X[k] == v:
+            return k
+    return None
+
+#def find_first(X,v):
+#    k = numpy.argmax(X==v)
+#    return k if X[k]==v else None
+
+#def find_last(X,v):
+#    k = X.size - 1 - numpy.argmax(X[::-1]==v)
+#    return k if X[k]==v else None
 
 def unpack_list_of_tuples(lst):
     """
@@ -241,7 +263,21 @@ def _split_array(a, n):
     k, m = divmod(len(a), n)
     return numpy.array([ a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n) ])
 
-def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, mask=None):
+def sort_A_to_B(A,B,return_ind=False):
+    """
+    sorts A according to B
+    returns A, the indices that sort A [[ A[ind] == A_sorted  ]]
+    """
+    map_AB    = { b:k for k,b in enumerate(B) }
+    ind,A_srt = unpack_list_of_tuples(sorted(list(enumerate(A)),key=lambda pair:map_AB[pair[1]]))
+    if _is_numpy_array(A):
+        A_srt = numpy.array(A_srt)
+    if return_ind:
+        return A_srt,ind
+    else:
+        return A_srt
+
+def linearized_fit(x_data, y_data, x_transform=None, y_transform=None, y_inverse_transform=None, mask=None):
     """
     Performs linear regression on transformed data using scipy.stats.linregress.
     I.e., this function fits a line
@@ -258,7 +294,7 @@ def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, 
         Function to transform x_data for linearization.
     y_transform : callable
         Function to transform y_data for linearization.
-    inverse_transform : callable
+    y_inverse_transform : callable
         Function to reverse the y_transform for plotting fitted curve in original space.
     mask : numpy-compatible index [e.g., range, int, logical, etc]
         if present, only performs fit on the masked data: x_data[mask], y_data[mask]
@@ -276,6 +312,13 @@ def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, 
     y_fit : ndarray
         Fitted y values in original space.
     """
+    if not exists(x_transform):
+        x_transform = lambda x:x
+    if not exists(y_transform):
+        y_transform         = lambda y:y
+        y_inverse_transform = lambda y:y
+    assert exists(y_transform) and exists(y_inverse_transform), "y_inverse_transform must be set when y_transform is set"
+
     # Transform the data
     if exists(mask):
         x_lin = x_transform(x_data[mask])
@@ -289,11 +332,11 @@ def linearized_fit(x_data, y_data, x_transform, y_transform, inverse_transform, 
 
     # Generate fitted values in original space
     x_fit = numpy.linspace(min(x_data), max(x_data), 100)
-    func  = lambda x,*fitpar: inverse_transform(fitpar[0] * x_transform(x) + fitpar[1])
+    func  = lambda x,*fitpar: y_inverse_transform(fitpar[0] * x_transform(x) + fitpar[1])
     y_fit = func(x_fit,slope,intercept)
 
     # Compute residuals and RSS in original space
-    y_pred    = inverse_transform(slope * x_lin + intercept)
+    y_pred    = y_inverse_transform(slope * x_lin + intercept)
     residuals = (y_data[mask] if exists(mask) else y_data) - y_pred
     rss       = numpy.sum(residuals**2)
 

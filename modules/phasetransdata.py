@@ -158,18 +158,24 @@ def save_phasetrans_file(fname,N_values,pt_data,d_files):
     scipy.io.savemat(fname,{'N':N_values,'data':io.list_of_arr_to_arr_of_obj(pt_data ),'d_files':io.list_of_arr_to_arr_of_obj(d_files)})
 
 
+def _merge_data_phasetrans_struct(s1,s2,f,ind,param_name_control):
+    get_data = lambda s: s[f] if f in s else numpy.full(s[param_name_control].shape,numpy.nan)
+    return numpy.concatenate((get_data(s1).flatten(),get_data(s2).flatten()))[ind]
+
+
 def merge_phasetrans_params_struct(s1,s2,param_name_control):
     if type(s1) is list:
         assert type(s2) is list, 'if s1 is a list, s2 must also be a list (if lengths do not match, only merge up to smallest length between s1 and s2)'
         return [ merge_phasetrans_params_struct(ss1,ss2,param_name_control) for ss1,ss2 in zip(s1,s2) ]
     f1     = s1.keys()
     f2     = s2.keys()
-    fields = set(f1) & set(f2)
-    assert fields == set(f1), 'both input structs must have the same fields'
+    fields = set(f1) | set(f2)
+    #assert fields == set(f1), 'both input structs must have the same fields'
+    assert param_name_control in fields, f'"{param_name_control}" must be a field in both input structs'
     fields.remove(param_name_control)
     p,ind = numpy.unique(numpy.concatenate((s1[param_name_control].flatten(),s2[param_name_control].flatten())), return_index=True)
     d     = {param_name_control:p}
-    d.update({f:numpy.concatenate((s1[f],s2[f]))[ind] for f in fields})
+    d.update({f:_merge_data_phasetrans_struct(s1,s2,f,ind,param_name_control) for f in fields})
     return misc.structtype(**d)
 
 
@@ -230,22 +236,35 @@ def convert_phasetrans_matrix_to_struct(phasetrans_data,param_name_control,param
     res['n_data'                  ] = phasetrans_data[:,6]
     return res
 
+def cutoff_transient(d,orderpar_field,t_trans,time_field='time',dt_field='dt'):
+    if not misc.exists(t_trans):
+        return d
+    if type(d) is list:
+        return [ cutoff_transient(d,orderpar_field,t_trans,time_field=time_field,dt_field=dt_field) for dd in d ]
+    assert all(f in d for f in [orderpar_field,time_field,dt_field]), 'check fields in data variable, some were not found'
+    d[orderpar_field] = d[orderpar_field][d[time_field]*d[dt_field]>=t_trans]
+    d[time_field]     = d[time_field][    d[time_field]*d[dt_field]>=t_trans]
+    return d
+
 def calc_phasetrans_params_struct(
     f_list,
     param_name_control,
     time_k1=None,
     time_k2=None,
+    t_trans=None,
     n_time_steps_sample=None,
     return_file_data=False,
     param_name_orderpar='rho',
     param_name_systemsize='N',
     param_name_time='time',
+    param_name_dt='dt',
     calc_suscept_bootstrap_error=False,
     return_as_struct=True,
     **bootstrap_args
 ):
     """
     Computes phase transition parameters from a list of .mat files containing time series data.
+    Cuts off the first t_trans time steps (in units of d.dt) from the time series before averaging [[ i.e. cuts off from d.time[0]*d.dt to d.time[k]*d.dt==t_trans ]]
     Phase transition quantities must be computed from an uncorrelated order parameter time series
     Use 'n_time_steps_sample' to subsamples the time series by selecting every nth time step.
     This is important to calculate averages ignoring autocorrelated data.
@@ -321,9 +340,9 @@ def calc_phasetrans_params_struct(
     for k,f in progress_bar: # for each input file
         progress_bar.set_postfix_str(f)
         d                    = io.import_mat_file(f,variable_names=variable_names,return_structtype=return_structtype)
-        phasetrans_data[k,:] = calc_phasetrans_params(d,param_name_control,n_time_steps_sample=n_time_steps_sample,calc_suscept_bootstrap_error=calc_suscept_bootstrap_error,**bootstrap_args)
         if return_file_data:
             d_trim.append(select_timerange_from_data(d, time_k1, time_k2))
+        phasetrans_data[k,:] = calc_phasetrans_params(cutoff_transient(d,param_name_orderpar,t_trans,param_name_time,param_name_dt),param_name_control,n_time_steps_sample=n_time_steps_sample,calc_suscept_bootstrap_error=calc_suscept_bootstrap_error,**bootstrap_args)
     progress_bar.close()
     ind             = numpy.argsort(phasetrans_data[:,0])  # sorting according to param value
     phasetrans_data = phasetrans_data[ind,:]
