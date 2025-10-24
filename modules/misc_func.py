@@ -277,6 +277,35 @@ def sort_A_to_B(A,B,return_ind=False):
     else:
         return A_srt
 
+def smooth_data(y,filter_func,filter_args,y_outlier_mask_args=None,x=None):
+    y_outlier_mask_args                         = _get_kwargs(y_outlier_mask_args, window=20, z_score_local_threshold=3,x=x)
+    y_outlier_mask_args['return_filtered_data'] = False
+    mask_y                                      = outlier_mask_local_filter(y,**y_outlier_mask_args)
+    y_flt                                       = filter_func(y[mask_y],**filter_args)
+    if exists(x):
+        return x[mask_y],y_flt
+    else:
+        return y_flt
+
+def outlier_mask_local_filter(y, window=20, z_score_local_threshold=3,return_filtered_data=False,x=None):
+    y    = numpy.asarray(y)
+    mask = numpy.ones_like(y, dtype=bool)
+    for i in range(len(y)):
+        w_start      = max(0, i - window // 2)
+        w_end        = min(len(y), i + window // 2)
+        y_local      = y[w_start:w_end]
+        y_local_mean = numpy.nanmean(y_local)
+        y_local_std  = numpy.nanstd( y_local)
+        if abs(y[i] - y_local_mean) > z_score_local_threshold * y_local_std:
+            mask[i] = False
+    if return_filtered_data:
+        if exists(x):
+            x = numpy.asarray(x)
+            return x[mask],y[mask]
+        return y[mask]
+    else:
+        return mask
+
 def linearized_fit(x_data, y_data, x_transform=None, y_transform=None, y_inverse_transform=None, mask=None):
     """
     Performs linear regression on transformed data using scipy.stats.linregress.

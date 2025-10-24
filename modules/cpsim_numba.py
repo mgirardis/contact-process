@@ -284,6 +284,9 @@ def bool2int(x):
 @njit(types.int64(types.int64,types.float64,types.float64))
 def state_iter_Tome_Oliveira(X,n,inv_l):
     """
+    The description in the book has a typo... It was supposed to be 1/(lambda + 1) instead of 1/lambda...
+    However, the code is kept here for reference. The corrected code is in state_iter_Tome_Oliveira_mod
+
      described in pg 308pdf/402 Tome Oliveira book before eq 13.6
      At each time step we choose a site at random, say site i.
        (a) If i is occupied, than we generate a random number r uniformly distributed in the interval [0;1].
@@ -705,8 +708,8 @@ def Run_RingGraph_parallel(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph,i
 
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun, False)
+    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     
     rho                 = numpy.zeros(tTotal-tTrans, dtype=numpy.float64)
     rho[0]              = float(sum_X) / N_fl
@@ -746,8 +749,8 @@ def Run_RingGraph_sequential(N,X0,fX0,X0Rand,l,tTrans,tTotal,dt,dtsample,M,graph
     
     # defining output functions and data variables
     write_spk_time,save_spk_time = get_write_spike_data_functions(saveSites,writeOnRun)
-    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     spk_file                     = open_file(spkFileName, saveSites and writeOnRun, dtsample_is_1)
+    X_data                       = save_initial_network_state(X, 0.0, saveSites, writeOnRun)
     dump_data                    = (saveSites or writeOnRun) and (dtsample > 1)
 
     n_data              = 1 + (tTotal_eff - tTrans_eff - 1) // dtsample

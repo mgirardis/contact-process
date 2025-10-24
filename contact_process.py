@@ -1,17 +1,16 @@
-# -*- coding: utf-8 -*-
+import warnings
+from numba.core.errors import NumbaExperimentalFeatureWarning
+warnings.simplefilter('ignore', NumbaExperimentalFeatureWarning)
+
 import os
 import sys
 import time as ostime
 import numpy
 import argparse
 import datetime
-import warnings
 import contextlib
 import modules.io as io
 import modules.cpsim_numba as cp
-
-from numba.core.errors import NumbaExperimentalFeatureWarning
-warnings.filterwarnings('ignore', category=NumbaExperimentalFeatureWarning)
 
 def main(): 
 
